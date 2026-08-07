@@ -5,6 +5,14 @@ local M = {}
 local hint_ns = vim.api.nvim_create_namespace("fpga_sv_hints")
 local timers = {}
 
+local function close_timer(timer)
+  if not timer or timer:is_closing() then
+    return
+  end
+  timer:stop()
+  timer:close()
+end
+
 local snippets = {
   module = "module ${1:name} (\n  ${2:/* ports */}\n);\n  ${0}\nendmodule : ${1:name}",
   interface = "interface ${1:name} (\n  ${2:/* ports */}\n);\n  ${0}\nendinterface : ${1:name}",
@@ -126,16 +134,18 @@ end
 function M.schedule_hints(workspace, bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   if timers[bufnr] then
-    timers[bufnr]:stop()
-    timers[bufnr]:close()
+    close_timer(timers[bufnr])
   end
   local timer = (vim.uv or vim.loop).new_timer()
   timers[bufnr] = timer
   timer:start(workspace.config.effective.hints.delay, 0, vim.schedule_wrap(function()
-    if timers[bufnr] == timer then
-      timers[bufnr] = nil
+    -- uv 回调可能已经进入 vim.schedule 队列，此时新事件会提前替换并关闭旧定时器。
+    if timers[bufnr] ~= timer then
+      close_timer(timer)
+      return
     end
-    timer:close()
+    timers[bufnr] = nil
+    close_timer(timer)
     if vim.api.nvim_buf_is_valid(bufnr) then
       local model = workspace.models and workspace.models[workspace.active_profile].full
       if model then
