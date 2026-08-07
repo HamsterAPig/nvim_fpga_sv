@@ -12,4 +12,3 @@
 (parameter_port_declaration) @parameter.outer
 (module_instantiation) @instance.outer
 (assert_property_statement) @assertion.outer
-(comment) @comment.outer
