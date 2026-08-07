@@ -55,11 +55,11 @@ function M.get()
       priority = 120,
       delay = 120,
       text = {
-        input = "IN ←",
-        output = "OUT →",
-        inout = "INOUT ↔",
-        ref = "REF ↕",
-        interface = "IF ◇",
+        input = "← IN",
+        output = "→ OUT",
+        inout = "↔ INOUT",
+        ref = "↕ REF",
+        interface = "◇ IF",
       },
       highlights = {
         input = "FpgaSvPortInput",

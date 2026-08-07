@@ -6,44 +6,111 @@ local function line_number(text, offset)
   return count + 1
 end
 
-local function split_top_level(text)
-  local result, current = {}, {}
-  local round, square, curly = 0, 0, 0
-  local quote = nil
-  for i = 1, #text do
+local function mask_ignored(text)
+  local result = {}
+  local state = "code"
+  local i = 1
+  while i <= #text do
     local ch = text:sub(i, i)
-    if quote then
-      current[#current + 1] = ch
-      if ch == quote and text:sub(i - 1, i - 1) ~= "\\" then
-        quote = nil
-      end
-    elseif ch == '"' or ch == "'" then
-      quote = ch
-      current[#current + 1] = ch
-    else
-      if ch == "(" then
-        round = round + 1
-      elseif ch == ")" then
-        round = round - 1
-      elseif ch == "[" then
-        square = square + 1
-      elseif ch == "]" then
-        square = square - 1
-      elseif ch == "{" then
-        curly = curly + 1
-      elseif ch == "}" then
-        curly = curly - 1
-      end
-      if ch == "," and round == 0 and square == 0 and curly == 0 then
-        result[#result + 1] = vim.trim(table.concat(current))
-        current = {}
+    local pair = text:sub(i, i + 1)
+    if state == "line_comment" then
+      if ch == "\n" then
+        state = "code"
+        result[#result + 1] = ch
       else
-        current[#current + 1] = ch
+        result[#result + 1] = " "
       end
+    elseif state == "block_comment" then
+      if pair == "*/" then
+        result[#result + 1] = " "
+        result[#result + 1] = " "
+        state = "code"
+        i = i + 1
+      elseif ch == "\n" then
+        result[#result + 1] = ch
+      else
+        result[#result + 1] = " "
+      end
+    elseif state == "string" then
+      if ch == "\\" and i < #text then
+        result[#result + 1] = " "
+        result[#result + 1] = " "
+        i = i + 1
+      elseif ch == '"' then
+        result[#result + 1] = ch
+        state = "code"
+      elseif ch == "\n" then
+        result[#result + 1] = ch
+      else
+        result[#result + 1] = " "
+      end
+    elseif pair == "//" then
+      result[#result + 1] = " "
+      result[#result + 1] = " "
+      state = "line_comment"
+      i = i + 1
+    elseif pair == "/*" then
+      result[#result + 1] = " "
+      result[#result + 1] = " "
+      state = "block_comment"
+      i = i + 1
+    elseif ch == '"' then
+      result[#result + 1] = ch
+      state = "string"
+    else
+      result[#result + 1] = ch
+    end
+    i = i + 1
+  end
+  return table.concat(result)
+end
+
+local function strip_comments(text)
+  local masked = mask_ignored(text)
+  local result = {}
+  local in_string = false
+  for i = 1, #text do
+    local original = text:sub(i, i)
+    local mask = masked:sub(i, i)
+    if original == '"' and mask == '"' then
+      in_string = not in_string
+      result[#result + 1] = original
+    elseif in_string or mask ~= " " or original:match("%s") then
+      result[#result + 1] = original
+    else
+      result[#result + 1] = " "
     end
   end
-  if #current > 0 then
-    result[#result + 1] = vim.trim(table.concat(current))
+  return table.concat(result)
+end
+
+local function split_top_level(text)
+  local result = {}
+  local masked = mask_ignored(text)
+  local round, square, curly = 0, 0, 0
+  local start = 1
+  for i = 1, #masked do
+    local ch = masked:sub(i, i)
+    if ch == "(" then
+      round = round + 1
+    elseif ch == ")" then
+      round = round - 1
+    elseif ch == "[" then
+      square = square + 1
+    elseif ch == "]" then
+      square = square - 1
+    elseif ch == "{" then
+      curly = curly + 1
+    elseif ch == "}" then
+      curly = curly - 1
+    elseif ch == "," and round == 0 and square == 0 and curly == 0 then
+      result[#result + 1] = vim.trim(text:sub(start, i - 1))
+      start = i + 1
+    end
+  end
+  local tail = vim.trim(text:sub(start))
+  if tail ~= "" then
+    result[#result + 1] = tail
   end
   return result
 end
@@ -54,16 +121,11 @@ local function balanced_at(text, start)
   if not close then
     return nil
   end
-  local depth, quote = 0, nil
-  for i = start, #text do
-    local ch = text:sub(i, i)
-    if quote then
-      if ch == quote and text:sub(i - 1, i - 1) ~= "\\" then
-        quote = nil
-      end
-    elseif ch == '"' or ch == "'" then
-      quote = ch
-    elseif ch == open then
+  local masked = mask_ignored(text)
+  local depth = 0
+  for i = start, #masked do
+    local ch = masked:sub(i, i)
+    if ch == open then
       depth = depth + 1
     elseif ch == close then
       depth = depth - 1
@@ -75,66 +137,160 @@ local function balanced_at(text, start)
   return nil
 end
 
+local function top_level_equal(text)
+  local masked = mask_ignored(text)
+  local round, square, curly = 0, 0, 0
+  for i = 1, #masked do
+    local ch = masked:sub(i, i)
+    if ch == "(" then
+      round = round + 1
+    elseif ch == ")" then
+      round = round - 1
+    elseif ch == "[" then
+      square = square + 1
+    elseif ch == "]" then
+      square = square - 1
+    elseif ch == "{" then
+      curly = curly + 1
+    elseif ch == "}" then
+      curly = curly - 1
+    elseif ch == "=" and round == 0 and square == 0 and curly == 0 then
+      return i
+    end
+  end
+end
+
+local function declaration_parts(text)
+  local equal = top_level_equal(text)
+  local declaration = vim.trim(equal and text:sub(1, equal - 1) or text)
+  local default = equal and vim.trim(text:sub(equal + 1)) or nil
+  local unpacked = {}
+  while true do
+    local start, finish = declaration:find("%b[]%s*$")
+    if not start then
+      break
+    end
+    table.insert(unpacked, 1, vim.trim(declaration:sub(start, finish)))
+    declaration = vim.trim(declaration:sub(1, start - 1))
+  end
+  local name_start, _, name = declaration:find("([%a_$][%w_$]*)%s*$")
+  if not name then
+    return nil
+  end
+  return {
+    name = name,
+    prefix = vim.trim(declaration:sub(1, name_start - 1)),
+    unpacked = #unpacked > 0 and table.concat(unpacked, " ") or nil,
+    default = default,
+  }
+end
+
+local function packed_dimensions(prefix)
+  local values = {}
+  for dimension in prefix:gmatch("%b[]") do
+    values[#values + 1] = vim.trim(dimension)
+  end
+  return #values > 0 and table.concat(values, " ") or nil
+end
+
 local function parse_ports(text, base_line)
   local ports, inherited = {}, {}
+  local search = 1
   for _, raw in ipairs(split_top_level(text)) do
-    local value = raw:gsub("//[^\n]*", " "):gsub("/%*.-%*/", " ")
+    local value = strip_comments(raw)
     local direction = value:match("^%s*(input)%f[%W]")
       or value:match("^%s*(output)%f[%W]")
       or value:match("^%s*(inout)%f[%W]")
       or value:match("^%s*(ref)%f[%W]")
     local explicit_direction = direction ~= nil
-    if direction then
-      inherited.direction = direction
-    else
-      direction = inherited.direction
+    local parts = declaration_parts(value)
+    if not parts then
+      goto continue
     end
 
-    local without_default = value:gsub("%s*=%s*.+$", "")
-    local name = without_default:match("([%a_$][%w_$]*)%s*%b[]%s*$")
-      or without_default:match("([%a_$][%w_$]*)%s*$")
-    local prefix = name
-        and without_default:sub(1, without_default:find(name, 1, true) - 1)
-      or ""
-    local interface, modport = prefix:match("([%a_$][%w_$]*)%.([%a_$][%w_$]*)")
-    if not explicit_direction and interface then
-      direction = "interface"
+    local prefix = parts.prefix
+    if explicit_direction then
+      prefix = vim.trim(prefix:gsub("^" .. direction .. "%f[%W]", "", 1))
     end
-    if name and direction then
-      if direction ~= "interface" then
-        prefix = prefix:gsub("^%s*" .. direction .. "%s*", "")
+    local packed = packed_dimensions(prefix)
+    local data_type = vim.trim(prefix:gsub("%b[]", " "):gsub("%s+", " "))
+    local interface, modport = data_type:match(
+      "^([%a_$][%w_$]*)%s*%.%s*([%a_$][%w_$]*)$"
+    )
+
+    if not explicit_direction then
+      if interface then
+        direction = "interface"
+      elseif data_type:match("^[%a_$][%w_$]*$") and not inherited.direction then
+        direction = "interface"
+        interface = data_type
+      else
+        direction = inherited.direction
       end
-      local packed = prefix:match("(%b[])")
-      local unpacked = without_default:match(name .. "%s*(%b[])%s*$")
-      interface, modport = prefix:match("([%a_$][%w_$]*)%.([%a_$][%w_$]*)")
-      local data_type = vim.trim(prefix:gsub("%b[]", ""):gsub("%s+", " "))
+    end
+
+    if direction == "interface" and not interface then
+      interface = inherited.interface
+      modport = inherited.modport
+      data_type = inherited.type or data_type
+    end
+    if not packed and not explicit_direction and prefix == "" then
+      packed = inherited.packed
+    end
+    if data_type == "" and not explicit_direction then
+      data_type = inherited.type or ""
+    end
+
+    if direction then
+      local raw_offset = text:find(raw, search, true) or search
+      local name_offset = value:find(parts.name, 1, true) or 1
       ports[#ports + 1] = {
-        name = name,
+        name = parts.name,
         direction = direction,
         packed = packed,
-        unpacked = unpacked,
+        unpacked = parts.unpacked,
         interface = interface,
         modport = modport,
         type = data_type ~= "" and data_type or nil,
-        line = base_line + line_number(text, math.max(1, text:find(name, 1, true) or 1)) - 1,
+        default = parts.default,
+        line = base_line + line_number(text, raw_offset + name_offset - 1) - 1,
+      }
+      inherited = {
+        direction = direction,
+        packed = packed,
+        interface = interface,
+        modport = modport,
+        type = data_type ~= "" and data_type or nil,
       }
     end
+    search = math.max(search, (text:find(raw, search, true) or search) + #raw)
+    ::continue::
   end
   return ports
 end
 
 local function parse_parameters(text, base_line)
-  local result = {}
+  local result, inherited = {}, nil
+  local search = 1
   for _, raw in ipairs(split_top_level(text)) do
-    local name = raw:match("parameter%s+.-([%a_$][%w_$]*)%s*=")
-      or raw:match("localparam%s+.-([%a_$][%w_$]*)%s*=")
-    if name then
+    local value = strip_comments(raw)
+    local kind = value:match("^%s*(parameter)%f[%W]")
+      or value:match("^%s*(localparam)%f[%W]")
+    if kind then
+      inherited = kind
+      value = vim.trim(value:gsub("^%s*" .. kind .. "%f[%W]", "", 1))
+    end
+    local parts = declaration_parts(value)
+    if inherited and parts and parts.default ~= nil then
+      local raw_offset = text:find(raw, search, true) or search
+      local name_offset = value:find(parts.name, 1, true) or 1
       result[#result + 1] = {
-        name = name,
-        default = raw:match("=%s*(.-)%s*$"),
-        line = base_line + line_number(text, math.max(1, text:find(name, 1, true) or 1)) - 1,
+        name = parts.name,
+        default = parts.default,
+        line = base_line + line_number(text, raw_offset + name_offset - 1) - 1,
       }
     end
+    search = math.max(search, (text:find(raw, search, true) or search) + #raw)
   end
   return result
 end
@@ -182,6 +338,29 @@ local patterns = {
   { "covergroup", "endgroup" },
 }
 
+local function header_end_at(text, start)
+  local masked = mask_ignored(text)
+  local round, square, curly = 0, 0, 0
+  for i = start, #masked do
+    local ch = masked:sub(i, i)
+    if ch == "(" then
+      round = round + 1
+    elseif ch == ")" then
+      round = round - 1
+    elseif ch == "[" then
+      square = square + 1
+    elseif ch == "]" then
+      square = square - 1
+    elseif ch == "{" then
+      curly = curly + 1
+    elseif ch == "}" then
+      curly = curly - 1
+    elseif ch == ";" and round == 0 and square == 0 and curly == 0 then
+      return i
+    end
+  end
+end
+
 local function scan_declarations(text, path, parser, line_offset, only_kind)
   local symbols = {}
   line_offset = line_offset or 0
@@ -210,7 +389,7 @@ local function scan_declarations(text, path, parser, line_offset, only_kind)
       }
 
       if kind == "module" or kind == "interface" then
-        local header_end = text:find(";", name_end + 1, true)
+        local header_end = header_end_at(text, name_end + 1)
         if header_end and header_end < finish then
           local header = text:sub(name_end + 1, header_end)
           local hash = header:find("#%s*%(")
@@ -243,6 +422,228 @@ local function scan_declarations(text, path, parser, line_offset, only_kind)
     ::continue::
   end
   return symbols
+end
+
+local excluded_instance_heads = {
+  module = true,
+  interface = true,
+  package = true,
+  class = true,
+  ["function"] = true,
+  task = true,
+  sequence = true,
+  property = true,
+  covergroup = true,
+  typedef = true,
+  parameter = true,
+  localparam = true,
+  input = true,
+  output = true,
+  inout = true,
+  ref = true,
+  logic = true,
+  bit = true,
+  wire = true,
+  reg = true,
+  assign = true,
+  always = true,
+  always_ff = true,
+  always_comb = true,
+  always_latch = true,
+  initial = true,
+  final = true,
+  ["if"] = true,
+  ["else"] = true,
+  ["for"] = true,
+  foreach = true,
+  ["while"] = true,
+  ["repeat"] = true,
+  forever = true,
+  case = true,
+  casex = true,
+  casez = true,
+  assert = true,
+  assume = true,
+  cover = true,
+  ["return"] = true,
+}
+
+local function skip_space(text, position)
+  while position <= #text and text:sub(position, position):match("%s") do
+    position = position + 1
+  end
+  return position
+end
+
+local function identifier_at(text, position)
+  local start, finish, name = text:find("([%a_$][%w_$]*)", position)
+  if start ~= position then
+    return nil
+  end
+  return name, finish + 1, finish
+end
+
+local function top_level_ranges(text, start, finish)
+  local masked = mask_ignored(text)
+  local result = {}
+  local round, square, curly = 0, 0, 0
+  local item_start = start
+  for i = start, finish do
+    local ch = masked:sub(i, i)
+    if ch == "(" then
+      round = round + 1
+    elseif ch == ")" then
+      round = round - 1
+    elseif ch == "[" then
+      square = square + 1
+    elseif ch == "]" then
+      square = square - 1
+    elseif ch == "{" then
+      curly = curly + 1
+    elseif ch == "}" then
+      curly = curly - 1
+    elseif ch == "," and round == 0 and square == 0 and curly == 0 then
+      result[#result + 1] = { item_start, i - 1 }
+      item_start = i + 1
+    end
+  end
+  result[#result + 1] = { item_start, finish }
+  return result, masked
+end
+
+local function trim_range(masked, start, finish)
+  while start <= finish and masked:sub(start, start):match("%s") do
+    start = start + 1
+  end
+  while finish >= start and masked:sub(finish, finish):match("%s") do
+    finish = finish - 1
+  end
+  return start, finish
+end
+
+local function parse_connections(text, start, finish)
+  local connections = {}
+  local ranges, masked = top_level_ranges(text, start, finish)
+  local positional = 0
+  for _, range in ipairs(ranges) do
+    local first, last = trim_range(masked, range[1], range[2])
+    if first <= last then
+      if masked:sub(first, first) == "." then
+        local position = skip_space(masked, first + 1)
+        if masked:sub(position, position) == "*" then
+          connections[#connections + 1] = {
+            kind = "automatic",
+            hint_offset = position + 1,
+          }
+        else
+          local name, after_name, name_end = identifier_at(masked, position)
+          if name then
+            local after = skip_space(masked, after_name)
+            if masked:sub(after, after) == "(" then
+              connections[#connections + 1] = {
+                kind = "named",
+                name = name,
+                hint_offset = after + 1,
+              }
+            else
+              connections[#connections + 1] = {
+                kind = "shorthand",
+                name = name,
+                hint_offset = name_end + 1,
+              }
+            end
+          end
+        end
+      else
+        positional = positional + 1
+        connections[#connections + 1] = {
+          kind = "positional",
+          position = positional,
+          hint_offset = first,
+        }
+      end
+    end
+  end
+  return connections
+end
+
+local function parse_instances(text)
+  local masked = mask_ignored(text)
+  local instances = {}
+  local search = 1
+  while search <= #masked do
+    local module_start, module_end, module_name = masked:find(
+      "([%a_$][%w_$]*)",
+      search
+    )
+    if not module_start then
+      break
+    end
+    search = module_end + 1
+    local previous = module_start > 1 and masked:sub(module_start - 1, module_start - 1) or ""
+    if previous:match("[%w_$]") or excluded_instance_heads[module_name] then
+      goto continue
+    end
+
+    local position = skip_space(masked, module_end + 1)
+    if masked:sub(position, position) == "#" then
+      position = skip_space(masked, position + 1)
+      if masked:sub(position, position) ~= "(" then
+        goto continue
+      end
+      local _, parameter_end = balanced_at(masked, position)
+      if not parameter_end then
+        goto continue
+      end
+      position = skip_space(masked, parameter_end + 1)
+    end
+
+    local instance_name, after_instance = identifier_at(masked, position)
+    if not instance_name then
+      goto continue
+    end
+    position = skip_space(masked, after_instance)
+    local arrays = {}
+    while masked:sub(position, position) == "[" do
+      local array, array_end = balanced_at(masked, position)
+      if not array then
+        goto continue
+      end
+      arrays[#arrays + 1] = text:sub(position, array_end)
+      position = skip_space(masked, array_end + 1)
+    end
+    if masked:sub(position, position) ~= "(" then
+      goto continue
+    end
+    local _, connection_end = balanced_at(masked, position)
+    if not connection_end then
+      goto continue
+    end
+    local tail = skip_space(masked, connection_end + 1)
+    local tail_char = masked:sub(tail, tail)
+    if tail_char ~= ";" and tail_char ~= "," and tail <= #masked then
+      goto continue
+    end
+
+    local connections = parse_connections(text, position + 1, connection_end - 1)
+    local automatic = false
+    for _, connection in ipairs(connections) do
+      automatic = automatic or connection.kind == "automatic"
+    end
+    instances[#instances + 1] = {
+      kind = "instance",
+      name = instance_name,
+      type = module_name,
+      array = #arrays > 0 and table.concat(arrays, " ") or nil,
+      automatic = automatic,
+      connections = connections,
+      line = line_number(text, module_start),
+      end_line = line_number(text, connection_end),
+    }
+    search = connection_end + 1
+    ::continue::
+  end
+  return instances
 end
 
 local function parse_declarations(text, path)
@@ -281,44 +682,12 @@ local function parse_declarations(text, path)
     symbols = scan_declarations(text, path, "fallback", 0, nil)
   end
 
-  local excluded_instance_heads = {
-    module = true,
-    interface = true,
-    package = true,
-    class = true,
-    ["function"] = true,
-    task = true,
-    ["if"] = true,
-    ["for"] = true,
-    ["while"] = true,
-    case = true,
-    assert = true,
-    cover = true,
-  }
   for row, line in ipairs(vim.split(text, "\n", { plain = true })) do
     local modport = line:match("%f[%w_]modport%s+([%a_$][%w_$]*)")
     if modport then
       symbols[#symbols + 1] = {
         kind = "modport",
         name = modport,
-        file = path,
-        line = row,
-        end_line = row,
-        parser = state == "missing" and "fallback" or "treesitter",
-      }
-    end
-
-    local compact = line:gsub("#%s*%b()", "")
-    local instance_type, instance_name, rest = compact:match(
-      "^%s*([%a_$][%w_$]*)%s+([%a_$][%w_$]*)%s*(.-)%("
-    )
-    if instance_type and not excluded_instance_heads[instance_type] then
-      symbols[#symbols + 1] = {
-        kind = "instance",
-        name = instance_name,
-        type = instance_type,
-        array = rest:match("(%b[])"),
-        automatic = line:find("%.%*") ~= nil,
         file = path,
         line = row,
         end_line = row,
@@ -339,6 +708,11 @@ local function parse_declarations(text, path)
         parser = state == "missing" and "fallback" or "treesitter",
       }
     end
+  end
+  for _, instance in ipairs(parse_instances(text)) do
+    instance.file = path
+    instance.parser = state == "missing" and "fallback" or "treesitter"
+    symbols[#symbols + 1] = instance
   end
 
   local deduplicated, seen = {}, {}
@@ -472,6 +846,7 @@ end
 
 M.split_top_level = split_top_level
 M.balanced_at = balanced_at
+M.parse_instances = parse_instances
 M.parse_text = parse_declarations
 
 return M

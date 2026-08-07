@@ -1,68 +1,246 @@
-*fpga_sv.txt*  SystemVerilog project support for Neovim 0.11+
+*fpga_sv.txt*  Neovim 0.11+ SystemVerilog 工程支持
 
 ==============================================================================
-1. Setup                                                     *fpga_sv-setup*
+1. 快速开始                                              *fpga_sv-quickstart*
 
 >
   require("fpga_sv").setup()
 <
 
-The plugin uses Slang, Verible/Conform, svlint and Tree-sitter. External tools
-are detected from PATH or explicit `tools.<name>.cmd`; nothing is installed.
+在 <project>/.nvim-fpga.lua 写入：
+
+>
+  return {
+    source_sets = {
+      rtl = {
+        roots = { "rtl" },
+      },
+    },
+    profiles = {
+      default = {
+        source_sets = { "rtl" },
+        top = "demo_top",
+      },
+    },
+    default_profile = "default",
+  }
+<
+
+首次使用：
+
+  1. 创建 .nvim-fpga.lua。
+  2. 接受项目配置的信任请求。
+  3. 执行 :FpgaSvGenerate。
+  4. 执行 :FpgaSvProjectInfo。
+  5. 确认 Profile、Source Set 和文件数量正确。
+
+插件使用 Slang、Verible/Conform、svlint 与 Tree-sitter，不在线安装工具。
 
 ==============================================================================
-2. Commands                                               *fpga_sv-commands*
+2. Source Set 与 Profile                                    *fpga_sv-project*
 
-:FpgaSvProfile [name]        Select the active Profile.
-:FpgaSvGenerate              Generate all Profile artifacts.
-:FpgaSvProjectInfo           Show the current project model and errors.
-:FpgaSvEditProjectConfig     Edit the trusted project configuration.
-:FpgaSvEditLocalConfig       Edit the repository-external local configuration.
-:FpgaSvInstantiate [module]  Insert a named-port instance.
-:FpgaSvExpand                Expand positional, shorthand and .* connections.
-:FpgaSvHints                 Toggle semantic port hints.
-:FpgaSvTop [module]          Set the Slang top-level module.
-:FpgaSvLint                  Lint the current file.
-:FpgaSvLintProject           Lint the active Profile into quickfix.
-:FpgaSvTemplate {name}       Expand a native vim.snippet template.
-:FpgaSvNext [kind]           Jump to the next structure.
-:FpgaSvPrev [kind]           Jump to the previous structure.
-:FpgaSvSelect {kind}         Select the enclosing structure.
+工程链路：
 
-Compatibility commands:
-SVInstantiate, SVProjectInfo, SVSlangSetBuild, SVSlangSetTop,
-SVPortDirectionsToggle.
+  Source Set 定义文件集合
+          ↓
+  Profile 选择 Source Set
+          ↓
+  生成活动 Profile 的 .f
+          ↓
+  发送 slang.setBuildFile
+          ↓
+  Slang 分析完整工程
 
-==============================================================================
-3. Configuration                                         *fpga_sv-config*
+定义 Source Set 不等于启用 Source Set。profile.source_sets 决定当前构建
+包含哪些集合。top 只指定顶层模块，不会自动收集依赖文件。是否属于工程
+以活动 Profile 的 .f 为准；同目录文件不会自动加入。
 
-Physical layers:
+配置层：
 
-  stdpath("config")/fpga-sv.lua
+  全局配置
   <project>/.nvim-fpga.lua
-  stdpath("state")/fpga_sv/projects/<hash>/config.lua
+  <state>/fpga_sv/projects/<project-id>/config.lua
 
-Precedence:
+优先级：
 
   defaults < global < setup() < project < local
 
-Project Lua is read with vim.secure.read(). Lists append and deduplicate by
-default. Explicit { add, remove, replace } operations are supported. File and
-directory entries accept { path = "...", optional = true }.
-
-See README.md for the Source Set and Profile schema.
+项目 Lua 由 vim.secure.read() 加载。列表默认追加并去重，也支持
+{ add, remove, replace }。文件和目录支持
+{ path = "...", optional = true }。
 
 ==============================================================================
-4. Events                                                   *fpga_sv-events*
+3. 字段摘要                                                *fpga_sv-fields*
+
+Source Set：
+
+  roots               相对 <project> 的源码扫描目录。
+  globs               文件类型与递归范围；直属文件可用 *.sv。
+  files               显式加入文件。
+  filelists           导入 .f；嵌套路径相对当前 filelist。
+  include_dirs        生成 -I，只搜索头文件，不编译目录模块。
+  library_dirs        生成 -y。
+  library_extensions  生成 +libext+...。
+  defines             无值宏或带值宏。
+  flags               原样传递额外编译参数。
+  depends_on          Source Set 依赖与顺序。
+  replaces            使用 stub 替换已收集源文件。
+  exclude             排除目录或文件。
+
+Profile：
+
+  source_sets         必须显式列出启用集合；空列表生成空文件集合。
+  top                 Slang 顶层模块。
+  defines             Profile 专用宏。
+  include_dirs        Profile 专用头文件目录。
+  flags               Profile 专用参数。
+  lint                Profile 专用 lint 配置。
+  default_profile     首次加载的默认 Profile。
+
+完整字段说明与配置用例见 README.md。
+
+==============================================================================
+4. 生成产物                                            *fpga_sv-artifacts*
+
+项目 .f：
+
+  <project>/.nvim/fpga-sv/<profile>.f
+
+本地 .f：
+
+  <state>/fpga_sv/projects/<project-id>/generated/<profile>.f
+
+slang.json 记录 Profile、build file 与 top。本地 .f 使用 -F 引用项目
+.f。外部 .slang/server.json 可以继续保存索引和 hover 设置，插件不会
+修改它；活动 .f 决定实际编译文件。
+
+空 .f 常见原因：
+
+  - Profile 未选择 Source Set。
+  - Source Set 名称拼写错误。
+  - glob 未匹配文件。
+  - 路径被 exclude 排除。
+
+==============================================================================
+5. Slang 生命周期                                          *fpga_sv-slang*
+
+插件复用标准 slang_server，不创建第二个自定义 Slang 客户端。
+
+在 LspAttach 后，插件按缓冲区所属工程发送：
+
+  slang.setBuildFile
+  slang.setTopLevel
+
+:FpgaSvGenerate、:FpgaSvRefresh、配置保存和 :FpgaSvProfile 会重新发送
+活动构建信息。setup() 也会补挂载已经打开的 Verilog/SystemVerilog
+缓冲区。同一缓冲区只保留一个标准 slang_server，可用 :LspInfo 检查。
+
+==============================================================================
+6. 端口提示                                                *fpga_sv-hints*
+
+提示是 virtual text，不会写入源码。模块声明位置由 hints.position 控制；
+例化提示固定为 inline：
+
+>
+  counter u_counter (
+    .clk         (← IN system_clk),
+    .input_data  (← IN [15:0] source_data),
+    .output_data (→ OUT [31:0] [3:0] result_array),
+    .master_port (◇ IF stream_if.master stream_bus),
+    .* AUTO:*
+  );
+<
+
+支持命名连接、简写连接、位置连接、参数化例化和实例数组。模块定义缺失
+或不唯一时不推测。.* 只显示 AUTO:*。
+
+配置项：
+
+  hints.enabled       总开关。
+  hints.directions    方向文字。
+  hints.dimensions    packed/unpacked 维度。
+  hints.interfaces    interface 与 modport。
+  hints.summary       模块端口统计。
+  hints.automatic     .* 的 AUTO:*。
+  hints.text          自定义文字。
+  hints.highlights    自定义高亮。
+  hints.position      仅控制模块声明提示。
+
+默认文字：
+
+  ← IN
+  → OUT
+  ↔ INOUT
+  ↕ REF
+  ◇ IF
+
+==============================================================================
+7. 命令                                                  *fpga_sv-commands*
+
+:FpgaSvProfile [name]        切换活动 Profile。
+:FpgaSvGenerate              生成全部 Profile 产物。
+:FpgaSvProjectInfo           显示工程模型、文件数量和错误。
+:FpgaSvEditProjectConfig     编辑受信任的项目配置。
+:FpgaSvEditLocalConfig       编辑 <state>/fpga_sv 中的本地配置。
+:FpgaSvInstantiate [module]  插入命名端口例化。
+:FpgaSvExpand                展开位置、简写和 .* 连接。
+:FpgaSvHints                 开关并刷新端口提示。
+:FpgaSvTop [module]          设置 Slang 顶层模块。
+:FpgaSvLint                  lint 当前文件。
+:FpgaSvLintProject           lint 活动 Profile 到 quickfix。
+:FpgaSvTemplate {name}       展开 vim.snippet 模板。
+:FpgaSvNext [kind]           跳到下一个结构。
+:FpgaSvPrev [kind]           跳到上一个结构。
+:FpgaSvSelect {kind}         选择当前结构。
+
+兼容命令：
+
+  SVInstantiate, SVProjectInfo, SVSlangSetBuild, SVSlangSetTop,
+  SVPortDirectionsToggle
+
+==============================================================================
+8. 排错                                                    *fpga_sv-trouble*
+
+文件存在但模块未知：
+
+  1. 检查活动 Profile。
+  2. 检查 Profile 是否选择对应 Source Set。
+  3. 检查 :FpgaSvProjectInfo 文件数量。
+  4. 检查活动 .f 是否包含目标文件。
+  5. 不要把源码目录误写入 include_dirs。
+
+子目录模块可识别、直属文件不可识别：
+
+  - 检查 globs 是否覆盖 *.sv 或 *.v。
+  - 检查 Slang 是否收到活动 .f。
+
+重复诊断：
+
+  - 用 :LspInfo 检查 slang_server 数量。
+
+无端口提示：
+
+  - 检查 hints.enabled 和活动 Profile。
+  - 检查模块端口是否已索引。
+  - 执行 :FpgaSvHints 刷新。
+
+配置修改未生效：
+
+  - 执行 :FpgaSvGenerate 或 :FpgaSvRefresh。
+  - 检查配置是否受信任。
+  - 检查 :FpgaSvProjectInfo 中的错误。
+
+unknown module 通常是文件集合问题。timescale、implicit net、unused
+signal 通常是真实 HDL 诊断。
+
+==============================================================================
+9. 事件与健康检查                                         *fpga_sv-events*
 
 FpgaSvProfileChanged
 FpgaSvProjectGenerated
 FpgaSvIndexUpdated
 
-==============================================================================
-5. Health                                                   *fpga_sv-health*
-
-Run:
+执行：
 
   :checkhealth fpga_sv
 

@@ -54,6 +54,18 @@ local function hint_text(port, options)
   return text
 end
 
+local function hint_position(text, offset)
+  local before = text:sub(1, math.max(0, offset - 1))
+  local _, row = before:gsub("\n", "\n")
+  local last_newline = before:match(".*()\n") or 0
+  return row, #before - last_newline
+end
+
+local function show_port_hint(port, options)
+  return options.directions
+    and (port.direction ~= "interface" or options.interfaces)
+end
+
 function M.refresh_hints(workspace, bufnr)
   bufnr = bufnr or 0
   if not vim.api.nvim_buf_is_valid(bufnr) then
@@ -69,62 +81,81 @@ function M.refresh_hints(workspace, bufnr)
   if not parsed then
     return
   end
+  local text = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
   for _, symbol in ipairs(parsed.symbols or {}) do
-    local counts = { input = 0, output = 0, inout = 0, ref = 0, interface = 0 }
-    for _, port in ipairs(symbol.ports or {}) do
-      counts[port.direction] = (counts[port.direction] or 0) + 1
-      if options.directions and port.line then
-        vim.api.nvim_buf_set_extmark(bufnr, hint_ns, math.max(0, port.line - 1), 0, {
-          virt_text = {
-            {
-              hint_text(port, options),
-              options.highlights[port.direction] or "Comment",
-            },
-          },
-          virt_text_pos = options.position,
-          priority = options.priority,
-          hl_mode = "combine",
-        })
-      end
-    end
-    if options.summary and symbol.line then
-      local summary = ("  I:%d O:%d IO:%d REF:%d IF:%d"):format(
-        counts.input,
-        counts.output,
-        counts.inout,
-        counts.ref,
-        counts.interface
-      )
-      vim.api.nvim_buf_set_extmark(bufnr, hint_ns, symbol.line - 1, 0, {
-        virt_text = { { summary, options.highlights.summary } },
-        virt_text_pos = "eol",
-        priority = options.priority,
-      })
-    end
-  end
-
-  -- 实例首行补充数组与自动连接提示；复杂多行实例仍由索引和展开命令处理。
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  for row, line in ipairs(lines) do
-    local compact = line:gsub("#%s*%b()", "")
-    for name, definitions in pairs(workspace.index.definitions or {}) do
-      if #definitions == 1 and definitions[1].kind == "module" then
-        local escaped = vim.pesc(name)
-        local instance, rest = compact:match("^%s*" .. escaped .. "%s+([%a_$][%w_$]*)%s*(.-)%(")
-        if instance then
-          local array = rest:match("(%b[])") or ""
-          local automatic = line:find("%.%*") and " AUTO:*" or ""
-          vim.api.nvim_buf_set_extmark(bufnr, hint_ns, row - 1, 0, {
+    if symbol.kind == "module" or symbol.kind == "interface" then
+      local counts = { input = 0, output = 0, inout = 0, ref = 0, interface = 0 }
+      for _, port in ipairs(symbol.ports or {}) do
+        counts[port.direction] = (counts[port.direction] or 0) + 1
+        if show_port_hint(port, options) and port.line then
+          vim.api.nvim_buf_set_extmark(bufnr, hint_ns, math.max(0, port.line - 1), 0, {
             virt_text = {
               {
-                "INST " .. instance .. array .. automatic,
-                options.highlights.summary,
+                hint_text(port, options),
+                options.highlights[port.direction] or "Comment",
               },
             },
-            virt_text_pos = "eol",
-            priority = options.priority - 1,
+            virt_text_pos = options.position,
+            priority = options.priority,
+            hl_mode = "combine",
           })
-          break
+        end
+      end
+      if options.summary and symbol.line then
+        local summary = ("  I:%d O:%d IO:%d REF:%d IF:%d"):format(
+          counts.input,
+          counts.output,
+          counts.inout,
+          counts.ref,
+          counts.interface
+        )
+        vim.api.nvim_buf_set_extmark(bufnr, hint_ns, math.max(0, symbol.line - 1), 0, {
+          virt_text = { { summary, options.highlights.summary } },
+          virt_text_pos = "eol",
+          priority = options.priority,
+        })
+      end
+    elseif symbol.kind == "instance" then
+      local definitions = indexer.lookup(workspace, symbol.type, "module")
+      if #definitions == 1 then
+        local module = definitions[1]
+        local ports = {}
+        for _, port in ipairs(module.ports or {}) do
+          ports[port.name] = port
+        end
+        for _, connection in ipairs(symbol.connections or {}) do
+          local port
+          if connection.kind == "named" or connection.kind == "shorthand" then
+            port = ports[connection.name]
+          elseif connection.kind == "positional" then
+            port = module.ports and module.ports[connection.position]
+          end
+
+          local value, highlight
+          if connection.kind == "automatic" then
+            if options.automatic then
+              value = " AUTO:*"
+              highlight = options.highlights.summary
+            end
+          elseif port and show_port_hint(port, options) then
+            local label = hint_text(port, options)
+            if connection.kind == "shorthand" then
+              value = " (" .. label .. ")"
+            else
+              value = label .. " "
+            end
+            highlight = options.highlights[port.direction] or "Comment"
+          end
+
+          if value and connection.hint_offset then
+            local row, column = hint_position(text, connection.hint_offset)
+            vim.api.nvim_buf_set_extmark(bufnr, hint_ns, row, column, {
+              virt_text = { { value, highlight } },
+              virt_text_pos = "inline",
+              priority = options.priority,
+              hl_mode = "combine",
+            })
+          end
         end
       end
     end

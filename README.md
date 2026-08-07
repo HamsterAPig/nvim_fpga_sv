@@ -1,30 +1,18 @@
 # nvim_fpga_sv
 
-面向 Neovim 0.11+ 的通用 SystemVerilog 编辑插件，优先适配
-LazyVim。插件只负责编辑分析工程，不保证生成的 filelist 能直接用于仿真、
-综合或厂商工程。
-
-固定编辑链路：
-
-- Slang language server：LSP、工程 build file 与 top。
-- Verible：通过 Conform 格式化。
-- svlint：当前文件诊断与完整 Profile quickfix。
-- Tree-sitter：语法着色、折叠、文本对象；parser 缺失或局部错误时使用
-  容错索引。
-
-插件不会在线安装任何工具。`slang-server`、`svlint`、
-`verible-verilog-format` 默认从 `PATH` 查找，也可以显式配置命令。
+面向 Neovim 0.11+ 的通用 SystemVerilog 编辑插件。插件负责建立编辑分析
+工程、驱动标准 `slang_server`、生成端口虚拟提示，并集成 Verible、
+svlint 与 Tree-sitter。生成的 filelist 用于编辑分析，不承诺可以直接替代
+仿真、综合或其他工具链的工程文件。
 
 ## 安装
 
-### 从 GitHub 安装（LazyVim 推荐）
-
-在 LazyVim 配置的 `lua/plugins/` 目录中新建 `fpga-sv.lua`：
+Lazy.nvim 示例：
 
 ```lua
 return {
   {
-    "HamsterAPig/nvim_fpga_sv",
+    "<plugin-owner>/nvim_fpga_sv",
     ft = { "systemverilog", "verilog" },
     dependencies = {
       "nvim-treesitter/nvim-treesitter",
@@ -37,184 +25,642 @@ return {
 }
 ```
 
-重新启动 Neovim，或执行：
+本地调试可将插件声明改为：
+
+```lua
+{
+  dir = "/path/to/tool",
+  name = "nvim_fpga_sv",
+}
+```
+
+插件不会在线安装工具。`slang-server`、`svlint` 和
+`verible-verilog-format` 默认从 `PATH` 查找，也可以显式配置：
+
+```lua
+require("fpga_sv").setup({
+  tools = {
+    slang = { cmd = "/path/to/tool/slang-server" },
+    svlint = { cmd = "/path/to/tool/svlint" },
+    verible = { cmd = "/path/to/tool/verible-verilog-format" },
+  },
+})
+```
+
+安装后执行：
 
 ```vim
-:Lazy sync
 :TSInstall verilog
 :checkhealth fpga_sv
 ```
 
 `systemverilog` 文件类型使用的 Tree-sitter parser 名称是 `verilog`。
 
-### 从本地目录安装
+## 快速开始
 
-开发或调试插件时，可以把 GitHub 仓库名改为本地目录：
-
-```lua
-return {
-  {
-    dir = "/path/to/nvim_fpga_sv",
-    name = "nvim_fpga_sv",
-    ft = { "systemverilog", "verilog" },
-    dependencies = {
-      "nvim-treesitter/nvim-treesitter",
-      "stevearc/conform.nvim",
-    },
-    config = function()
-      require("fpga_sv").setup()
-    end,
-  },
-}
-```
-
-### 显式配置工具路径
-
-外部工具在 `PATH` 中时无需额外配置。若工具不在 `PATH` 中，可在
-`setup()` 中指定可执行文件：
-
-```lua
-require("fpga_sv").setup({
-  tools = {
-    slang = {
-      cmd = "D:/tools/slang-server.exe",
-    },
-    svlint = {
-      cmd = "D:/tools/svlint.exe",
-    },
-    verible = {
-      cmd = "D:/tools/verible-verilog-format.exe",
-    },
-  },
-})
-```
-
-插件不会自动下载这些外部工具。安装完成后，可执行
-`:checkhealth fpga_sv` 检查 Slang、svlint、Verible、Conform 和
-Tree-sitter 状态。
-
-## 工程配置
-
-物理配置分为三层：
-
-1. 全局：`stdpath("config")/fpga-sv.lua`
-2. 项目：项目根目录 `.nvim-fpga.lua`
-3. local：`stdpath("state")/fpga_sv/projects/<root-hash>/config.lua`
-
-行为优先级：
+示例工程完全使用虚构名称：
 
 ```text
-内置默认值 < 全局文件 < setup() < 项目文件 < local 文件
+demo_project
+├── .nvim-fpga.lua
+├── rtl
+│   ├── demo_top.sv
+│   └── counter.sv
+└── vendor
+    └── clock_core.v
 ```
 
-项目配置通过 `vim.secure.read()` 加载。首次读取或文件内容变化后，
-Neovim 会重新请求信任。可用 `:FpgaSvEditProjectConfig` 和
-`:FpgaSvEditLocalConfig` 创建或编辑配置。
-
-完整示例：
+在 `<project>/.nvim-fpga.lua` 写入最小配置：
 
 ```lua
 return {
   source_sets = {
-    common = {
+    rtl = {
       roots = { "rtl" },
-      files = {},
-      globs = { "**/*.sv", "**/*.svh", "**/*.v", "**/*.vh" },
-      exclude = { "build", "output" },
-      filelists = {},
-      include_dirs = { { path = "include", optional = true } },
-      defines = { FPGA = true, WIDTH = 32 },
-      library_dirs = {},
-      library_extensions = { ".sv", ".v" },
-      flags = {},
-      depends_on = {},
-    },
-    vendor_stub = {
-      files = { "stubs/vendor_ip.sv" },
-      replaces = { "../vendor/encrypted_ip.sv" },
-      depends_on = { "common" },
     },
   },
   profiles = {
     default = {
-      source_sets = { "common", "vendor_stub" },
-      top = "fpga_top",
-      defines = {},
-      include_dirs = {},
-      flags = {},
-      lint = { config = ".svlint.toml" },
+      source_sets = { "rtl" },
+      top = "demo_top",
     },
   },
   default_profile = "default",
 }
 ```
 
-所有列表默认追加并稳定去重，也支持显式操作：
+首次使用流程：
+
+1. 创建 `.nvim-fpga.lua`。
+2. 接受 Neovim 对项目配置的信任请求。
+3. 执行 `:FpgaSvGenerate`。
+4. 执行 `:FpgaSvProjectInfo`。
+5. 确认活动 Profile、Source Set 和文件数量正确。
+
+项目配置由 `vim.secure.read()` 加载。首次读取或内容变化后，Neovim 会
+重新请求信任。
+
+## 工程模型
+
+```text
+Source Set 定义文件集合
+        ↓
+Profile 选择 Source Set
+        ↓
+生成活动 Profile 的 .f
+        ↓
+发送 slang.setBuildFile
+        ↓
+Slang 分析完整工程
+```
+
+必须区分“定义”与“启用”：
+
+- 定义 Source Set 不等于启用 Source Set。
+- `profile.source_sets` 决定哪些集合参与当前构建。
+- `top` 只指定顶层模块，不会自动收集依赖文件。
+- 当前打开的文件可以由 Slang 单独分析，但同目录文件不会自动进入工程。
+- 是否属于工程以活动 Profile 生成的 `.f` 为准。
+
+配置分为三层：
+
+```text
+全局配置
+<project>/.nvim-fpga.lua
+<state>/fpga_sv/projects/<project-id>/config.lua
+```
+
+合并顺序：
+
+```text
+内置默认值 < 全局文件 < setup() < 项目文件 < local 文件
+```
+
+## Source Set 字段参考
+
+### `roots`
+
+相对 `<project>` 解析，扫描目录中的 Verilog/SystemVerilog 源文件。
+默认扫描 `.sv`、`.svh`、`.v` 和 `.vh`。
 
 ```lua
-include_dirs = {
-  add = { "local/include" },
-  remove = { "obsolete/include" },
-  replace = { "only/this/include" },
+roots = { "rtl", "vendor" }
+```
+
+目录也可以设为可选：
+
+```lua
+roots = {
+  "rtl",
+  { path = "generated", optional = true },
 }
 ```
 
-文件与目录可以标记为可选：
+### `globs`
+
+控制每个 `roots` 目录中的文件类型和递归范围。
+
+```lua
+-- 只匹配目录直属文件
+globs = { "*.sv", "*.v" }
+
+-- 递归匹配子目录
+globs = { "**/*.sv" }
+
+-- 同时覆盖直属文件、递归目录和混合扩展名
+globs = { "*.sv", "*.v", "**/*.sv", "**/*.v" }
+```
+
+### `files`
+
+显式加入指定文件，适合少量模型或不规则目录。
 
 ```lua
 files = {
-  "rtl/required.sv",
-  { path = "generated/optional.sv", optional = true },
+  "vendor/clock_core.v",
+  "vendor/memory_model.sv",
 }
 ```
 
-缺失必需项、Source Set 依赖循环、缺失依赖或生成所有权冲突都会阻止
-覆盖上一份有效产物。
+### `filelists`
+
+导入已有 `.f`。嵌套 `-f` 或 `-F` 相对于当前 filelist 所在目录解析。
+
+```lua
+filelists = { "config/project.f" }
+```
+
+### `include_dirs`
+
+生成 `-I`，只用于头文件搜索。把源码目录写入 `include_dirs` 不会编译
+其中的模块。
+
+```lua
+include_dirs = { "include", "rtl/include" }
+```
+
+### `library_dirs`
+
+生成 `-y`，配合 `library_extensions` 搜索库模块。
+
+```lua
+library_dirs = { "vendor" }
+```
+
+### `library_extensions`
+
+生成 `+libext+...`。
+
+```lua
+library_extensions = { ".sv", ".v" }
+```
+
+### `defines`
+
+支持无值宏和带值宏：
+
+```lua
+defines = {
+  DEMO_BUILD = true,
+  DATA_WIDTH = 32,
+}
+```
+
+也可以使用列表形式：
+
+```lua
+defines = { "DEMO_BUILD", "DATA_WIDTH=32" }
+```
+
+### `flags`
+
+原样传递额外编译参数：
+
+```lua
+flags = { "--ignore-unknown-modules" }
+```
+
+### `depends_on`
+
+定义 Source Set 之间的依赖和生成顺序：
+
+```lua
+simulation = {
+  roots = { "tb" },
+  depends_on = { "rtl" },
+}
+```
+
+### `replaces`
+
+从已收集文件中移除指定源文件，再由当前 Source Set 加入 stub：
+
+```lua
+counter_stub = {
+  files = { "stubs/counter.sv" },
+  replaces = { "rtl/counter.sv" },
+  depends_on = { "rtl" },
+}
+```
+
+### `exclude`
+
+排除生成目录、输出目录或指定文件：
+
+```lua
+exclude = {
+  "build",
+  "output",
+  "rtl/unused_block.sv",
+}
+```
+
+### `optional`
+
+文件和目录都支持 `{ path = "...", optional = true }`：
+
+```lua
+files = {
+  "rtl/demo_top.sv",
+  { path = "generated/registers.sv", optional = true },
+}
+```
+
+## Profile 字段参考
+
+### `source_sets`
+
+必须显式列出启用的 Source Set。空列表会生成空文件集合。
+
+```lua
+source_sets = { "rtl", "vendor_models" }
+```
+
+### `top`
+
+指定 Slang 顶层模块，但不会自动收集模块依赖：
+
+```lua
+top = "demo_top"
+```
+
+### `defines`
+
+添加当前 Profile 专用宏：
+
+```lua
+defines = { SIMULATION = true }
+```
+
+### `include_dirs`
+
+添加当前 Profile 专用头文件目录：
+
+```lua
+include_dirs = { "tb/include" }
+```
+
+### `flags`
+
+添加当前 Profile 专用参数：
+
+```lua
+flags = { "--compat vcs" }
+```
+
+### `lint`
+
+指定当前 Profile 使用的 lint 配置：
+
+```lua
+lint = { config = ".svlint.toml" }
+```
+
+### `default_profile`
+
+`default_profile` 决定首次加载时的默认 Profile。使用
+`:FpgaSvProfile [name]` 切换后，插件会在 `<state>/fpga_sv` 保存当前
+选择，并重新激活对应 `.f`。
+
+## 通用配置用例
+
+### 1. 单一 RTL 目录
+
+```lua
+source_sets = {
+  rtl = {
+    roots = { "rtl" },
+  },
+}
+```
+
+### 2. RTL 与模型分离
+
+```lua
+source_sets = {
+  rtl = {
+    roots = { "rtl" },
+  },
+  vendor_models = {
+    roots = { "vendor" },
+    globs = { "**/*.sv", "**/*.v" },
+  },
+},
+profiles = {
+  default = {
+    source_sets = { "rtl", "vendor_models" },
+    top = "demo_top",
+  },
+},
+```
+
+### 3. 只加入指定模型
+
+```lua
+vendor_models = {
+  files = {
+    "vendor/clock_core.v",
+    "vendor/memory_model.sv",
+  },
+}
+```
+
+### 4. 综合与仿真 Profile
+
+```lua
+source_sets = {
+  rtl = {
+    roots = { "rtl" },
+  },
+  simulation = {
+    roots = { "tb" },
+    depends_on = { "rtl" },
+  },
+},
+profiles = {
+  synth = {
+    source_sets = { "rtl" },
+    top = "demo_top",
+  },
+  sim = {
+    source_sets = { "simulation" },
+    top = "demo_top_tb",
+  },
+},
+default_profile = "synth",
+```
+
+### 5. 已有 filelist
+
+```lua
+source_sets = {
+  existing_build = {
+    filelists = { "config/project.f" },
+  },
+},
+profiles = {
+  default = {
+    source_sets = { "existing_build" },
+  },
+},
+```
+
+### 6. 可选生成文件
+
+```lua
+files = {
+  "rtl/demo_top.sv",
+  { path = "generated/registers.sv", optional = true },
+}
+```
+
+### 7. 列表覆盖操作
+
+列表默认追加并稳定去重，也支持 `add`、`remove` 和 `replace`：
+
+```lua
+include_dirs = {
+  add = { "include/common" },
+  remove = { "include/obsolete" },
+}
+```
 
 ## 生成产物
 
-项目层生成：
+活动 Profile 会生成三类信息：
+
+- 项目 `.f`：`<project>/.nvim/fpga-sv/<profile>.f`，保存可移植配置。
+- 本地 `.f`：`<state>/fpga_sv/projects/<project-id>/generated/<profile>.f`，
+  保存机器相关增量，并通过 `-F` 引用项目 `.f`。
+- `slang.json`：记录 Profile、build file 和 top，供插件恢复活动状态。
+
+项目 `.f` 的正确示例：
 
 ```text
-<root>/.nvim/fpga-sv/<profile>.f
-<root>/.nvim/fpga-sv/<profile>.slang.json
+// generated by nvim_fpga_sv; DO NOT EDIT
+-Iinclude
+-DDEMO_BUILD
+rtl/demo_top.sv
+rtl/counter.sv
+vendor/clock_core.v
 ```
 
-项目层只包含项目 Lua 声明的可移植内容，路径优先相对项目根目录。
-机器相关内容生成在 Neovim state 目录，通过 `-F` 引用项目 `.f`。
-插件不会自动修改 `.gitignore`。
+本地 `.f` 至少包含：
+
+```text
+// generated by nvim_fpga_sv; DO NOT EDIT
+-F <project>/.nvim/fpga-sv/default.f
+```
+
+空 `.f` 示例：
+
+```text
+// generated by nvim_fpga_sv; DO NOT EDIT
+```
+
+常见原因：
+
+- Profile 未选择任何 Source Set。
+- Source Set 名称拼写错误。
+- `globs` 没有匹配文件。
+- 路径被 `exclude` 排除。
+
+插件不会修改外部 `.slang/server.json`。该文件可以继续保存索引、hover 等
+Slang 设置；插件生成的活动 `.f` 决定实际编译文件。
+
+## Slang 生命周期
+
+插件复用标准 `slang_server` 配置，不创建第二个自定义 Slang 客户端。
+
+```text
+slang_server 附着缓冲区
+        ↓
+识别缓冲区所属 <project>
+        ↓
+发送 slang.setBuildFile
+        ↓
+发送 slang.setTopLevel
+```
+
+以下操作会重新发送活动构建信息：
+
+- `slang_server` 完成 `LspAttach`。
+- 执行 `:FpgaSvGenerate`。
+- 执行 `:FpgaSvRefresh` 或保存已信任的配置。
+- 使用 `:FpgaSvProfile` 切换 Profile。
+
+插件初始化时也会补挂载已经打开的 Verilog/SystemVerilog 缓冲区。同一
+缓冲区只保留一个标准 Slang 客户端，避免重复诊断。可用 `:LspInfo`
+检查客户端数量。
+
+## 端口提示
+
+提示使用 Neovim virtual text，不会写入源文件。模块声明提示的位置由
+`hints.position` 控制；例化提示始终使用 inline virtual text。
+
+模块声明显示效果：
+
+```systemverilog
+module counter (
+  input  logic        clk,                ← IN
+  input  logic [15:0] input_data,         ← IN [15:0]
+  output logic [31:0] output_data [3:0],  → OUT [31:0] [3:0]
+  stream_if.master    master_port         ◇ IF stream_if.master
+);
+```
+
+普通命名连接：
+
+```systemverilog
+counter u_counter (
+  .clk         (← IN system_clk),
+  .input_data  (← IN [15:0] source_data),
+  .output_data (→ OUT [31:0] [3:0] result_array),
+  .master_port (◇ IF stream_if.master stream_bus)
+);
+```
+
+modport 保留完整类型：
+
+```systemverilog
+.master_port (◇ IF stream_if.master master_bus),
+.slave_port  (◇ IF stream_if.slave slave_bus)
+```
+
+参数化例化和实例数组同样支持：
+
+```systemverilog
+counter #(
+  .WIDTH(16)
+) u_counter [3:0] (
+  .clk        (← IN system_clk),
+  .input_data (← IN [15:0] source_data)
+);
+```
+
+简写连接和位置连接会在对应表达式旁显示方向。自动连接只显示
+`AUTO:*`，不会伪造逐端口方向：
+
+```systemverilog
+counter u_counter (
+  .clk (← IN),
+  .* AUTO:*
+);
+```
+
+模块定义缺失或定义不唯一时，插件不会显示推测结果。
+
+配置项：
+
+- `hints.enabled`：总开关。
+- `hints.directions`：显示 input/output/inout/ref 方向。
+- `hints.dimensions`：显示 packed/unpacked 数组维度。
+- `hints.interfaces`：显示 interface 与 modport。
+- `hints.summary`：显示模块声明端口统计。
+- `hints.automatic`：为 `.*` 显示 `AUTO:*`。
+- `hints.text`：覆盖默认方向文字。
+- `hints.highlights`：覆盖高亮组。
+- `hints.position`：仅控制模块声明提示位置。
+
+自定义文字：
+
+```lua
+hints = {
+  text = {
+    input = "< IN",
+    output = "> OUT",
+    inout = "<> INOUT",
+    ref = "REF",
+    interface = "IF",
+  },
+}
+```
+
+默认文字为：
+
+```text
+← IN
+→ OUT
+↔ INOUT
+↕ REF
+◇ IF
+```
 
 ## 命令
 
 - `:FpgaSvProfile [name]`：切换活动 Profile。
-- `:FpgaSvGenerate`：生成全部 Profile。
-- `:FpgaSvProjectInfo`：显示工程、错误与产物。
+- `:FpgaSvGenerate`：生成全部 Profile，并重新通知 Slang。
+- `:FpgaSvProjectInfo`：显示工程、错误、文件数量与产物。
 - `:FpgaSvInstantiate [module]`：生成命名端口例化。
 - `:FpgaSvExpand`：展开位置连接、`.port` 与 `.*`。
-- `:FpgaSvHints`：开关端口虚拟提示。
+- `:FpgaSvHints`：开关并刷新端口提示。
 - `:FpgaSvTop [module]`：通知 Slang top。
 - `:FpgaSvLint`：lint 当前文件。
 - `:FpgaSvLintProject`：lint 活动 Profile，结果写入 quickfix。
-- `:FpgaSvTemplate <name>`：用原生 `vim.snippet` 展开模板。
+- `:FpgaSvTemplate <name>`：展开原生 `vim.snippet` 模板。
 - `:FpgaSvNext [kind]` / `:FpgaSvPrev [kind]`：结构导航。
 - `:FpgaSvSelect <kind>`：选择当前结构。
-- `:checkhealth fpga_sv`：检查 parser、工具与 local 产物位置。
+- `:checkhealth fpga_sv`：检查 parser、工具与本地产物。
 
 兼容别名包括 `SVInstantiate`、`SVProjectInfo`、`SVSlangSetBuild`、
 `SVSlangSetTop` 和 `SVPortDirectionsToggle`。
 
-默认 buffer-local 键位：
+## 排错指南
 
-```text
-<leader>vp  Profile       <leader>vg  Generate
-<leader>vi  Instantiate   <leader>ve  Expand
-<leader>vr  Refresh       <leader>vd  Hints
-<leader>vl  Lint
-```
+### 文件存在但模块未知
 
-每个键位都可以覆盖，设置为 `false` 即禁用。
+1. 检查活动 Profile。
+2. 检查 Profile 是否选择对应 Source Set。
+3. 检查 `:FpgaSvProjectInfo` 中的文件数量。
+4. 检查生成 `.f` 是否包含目标文件。
+5. 确认没有误把源码目录写入 `include_dirs`。
 
-## 公共 API
+`unknown module` 通常属于文件集合问题；`timescale`、implicit net、
+unused signal 等通常属于真实 HDL 源码问题。
+
+### 子目录模块能识别，直属文件不能识别
+
+- 检查 `globs` 是否包含 `*.sv`、`*.v` 等直属文件规则。
+- 检查 Slang 是否收到插件生成的活动 `.f`。
+
+### 每条诊断出现两次
+
+执行 `:LspInfo`，确认当前缓冲区只有一个 `slang_server`。
+
+### 没有端口方向提示
+
+- 检查 `hints.enabled`。
+- 检查当前文件是否属于活动 Profile。
+- 检查模块端口是否成功索引。
+- 执行 `:FpgaSvHints` 关闭后再次执行以刷新。
+
+### 修改配置后未生效
+
+- 执行 `:FpgaSvGenerate` 或 `:FpgaSvRefresh`。
+- 检查项目配置是否已被信任。
+- 检查 `:FpgaSvProjectInfo` 中的错误。
+
+## 公共 API 与事件
 
 ```lua
 local fpga = require("fpga_sv")
@@ -228,12 +674,15 @@ fpga.register_installer("name", installer)
 fpga.statusline()
 ```
 
+公开 Lua API 与必填配置字段保持不变。
+
 插件发布 `FpgaSvProfileChanged`、`FpgaSvProjectGenerated` 和
 `FpgaSvIndexUpdated` 三个 `User` 事件。
 
-## v1 边界
+## 边界
 
-- 不在线安装工具，只保留 backend / installer provider 注册接口。
-- 不包含 UVM query、UVM 模板或 UVM 专用导航。
+- 不在线安装外部工具。
+- 不修改用户 HDL 工程源码。
+- 不修改外部 Slang 配置。
 - Conform 不存在时不实现第二套格式化器。
 - `.f` 是编辑分析产物，不承诺工具链工程兼容性。

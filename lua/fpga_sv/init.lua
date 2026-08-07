@@ -10,6 +10,11 @@ local M = {}
 local initialized = false
 local availability = {}
 
+local function is_hdl_buffer(bufnr)
+  local filetype = vim.bo[bufnr].filetype
+  return filetype == "systemverilog" or filetype == "verilog"
+end
+
 local function setup_highlights()
   local links = {
     FpgaSvPortInput = "DiagnosticHint",
@@ -46,6 +51,7 @@ local function attach_buffer(bufnr)
   end
   features.setup_buffer(workspace, bufnr)
   commands.setup_buffer(workspace, bufnr)
+  require("fpga_sv.adapters.slang").attach(workspace, bufnr)
 end
 
 function M.setup(options)
@@ -70,6 +76,32 @@ function M.setup(options)
     pattern = { "systemverilog", "verilog" },
     callback = function(args)
       attach_buffer(args.buf)
+    end,
+  })
+  vim.api.nvim_create_autocmd("LspAttach", {
+    group = group,
+    callback = function(args)
+      local client = vim.lsp.get_client_by_id(args.data.client_id)
+      if not client or client.name ~= "slang_server" or not is_hdl_buffer(args.buf) then
+        return
+      end
+      local workspace_item = workspace_manager.get(workspace_manager.root(args.buf))
+      if workspace_item.config.valid and not workspace_item.models then
+        local built, errors = generate.run(workspace_item)
+        if not built then
+          util.notify(table.concat(errors, "\n"), vim.log.levels.ERROR)
+          return
+        end
+        indexer.build(
+          workspace_item,
+          workspace_item.models[workspace_item.active_profile].full
+        )
+      end
+      require("fpga_sv.adapters.slang").attach(
+        workspace_item,
+        args.buf,
+        args.data.client_id
+      )
     end,
   })
   vim.api.nvim_create_autocmd("BufWritePost", {
@@ -99,6 +131,14 @@ function M.setup(options)
       end)
     end,
   })
+  -- setup() 可能在 FileType 之后执行，补挂载已经打开的 HDL 缓冲区。
+  vim.schedule(function()
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_loaded(bufnr) and is_hdl_buffer(bufnr) then
+        attach_buffer(bufnr)
+      end
+    end
+  end)
   return M
 end
 
