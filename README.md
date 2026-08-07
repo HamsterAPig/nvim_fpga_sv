@@ -17,29 +17,81 @@ LazyVim。插件只负责编辑分析工程，不保证生成的 filelist 能直
 
 ## 安装
 
-Lazy.nvim / LazyVim：
+### 从 GitHub 安装（LazyVim 推荐）
+
+在 LazyVim 配置的 `lua/plugins/` 目录中新建 `fpga-sv.lua`：
 
 ```lua
-{
-  dir = "/path/to/nvim_fpga_sv",
-  ft = { "systemverilog", "verilog" },
-  config = function()
-    require("fpga_sv").setup()
-  end,
+return {
+  {
+    "HamsterAPig/nvim_fpga_sv",
+    ft = { "systemverilog", "verilog" },
+    dependencies = {
+      "nvim-treesitter/nvim-treesitter",
+      "stevearc/conform.nvim",
+    },
+    config = function()
+      require("fpga_sv").setup()
+    end,
+  },
 }
 ```
 
-最小配置：
+重新启动 Neovim，或执行：
+
+```vim
+:Lazy sync
+:TSInstall verilog
+:checkhealth fpga_sv
+```
+
+`systemverilog` 文件类型使用的 Tree-sitter parser 名称是 `verilog`。
+
+### 从本地目录安装
+
+开发或调试插件时，可以把 GitHub 仓库名改为本地目录：
+
+```lua
+return {
+  {
+    dir = "/path/to/nvim_fpga_sv",
+    name = "nvim_fpga_sv",
+    ft = { "systemverilog", "verilog" },
+    dependencies = {
+      "nvim-treesitter/nvim-treesitter",
+      "stevearc/conform.nvim",
+    },
+    config = function()
+      require("fpga_sv").setup()
+    end,
+  },
+}
+```
+
+### 显式配置工具路径
+
+外部工具在 `PATH` 中时无需额外配置。若工具不在 `PATH` 中，可在
+`setup()` 中指定可执行文件：
 
 ```lua
 require("fpga_sv").setup({
   tools = {
+    slang = {
+      cmd = "D:/tools/slang-server.exe",
+    },
     svlint = {
       cmd = "D:/tools/svlint.exe",
+    },
+    verible = {
+      cmd = "D:/tools/verible-verilog-format.exe",
     },
   },
 })
 ```
+
+插件不会自动下载这些外部工具。安装完成后，可执行
+`:checkhealth fpga_sv` 检查 Slang、svlint、Verible、Conform 和
+Tree-sitter 状态。
 
 ## 工程配置
 
