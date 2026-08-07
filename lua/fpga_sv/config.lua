@@ -1,0 +1,138 @@
+local defaults = require("fpga_sv.defaults")
+local util = require("fpga_sv.util")
+local M = {}
+
+local function eval_lua(text, path)
+  local chunk, err = load(text, "@" .. path, "t", setmetatable({ vim = vim }, { __index = _G }))
+  if not chunk then
+    return nil, err
+  end
+  local ok, value = pcall(chunk)
+  if not ok then
+    return nil, value
+  end
+  if value == nil then
+    return {}
+  end
+  if type(value) ~= "table" then
+    return nil, path .. " 必须返回 table"
+  end
+  return value
+end
+
+local function read_layer(path, secure)
+  if not path or not util.exists(path) then
+    return {}, nil
+  end
+  local text, err
+  if secure then
+    local ok
+    ok, text = pcall(vim.secure.read, path)
+    if not ok or not text then
+      return nil, "项目配置未受信任或读取失败: " .. path
+    end
+  else
+    text, err = util.read_file(path)
+    if not text then
+      return nil, "读取配置失败: " .. path .. ": " .. tostring(err)
+    end
+  end
+  return eval_lua(text, path)
+end
+
+local function validate(config)
+  local errors = {}
+  if type(config.source_sets) ~= "table" then
+    errors[#errors + 1] = "source_sets 必须是 table"
+  end
+  if type(config.profiles) ~= "table" then
+    errors[#errors + 1] = "profiles 必须是 table"
+  end
+  if type(config.default_profile) ~= "string" then
+    errors[#errors + 1] = "default_profile 必须是字符串"
+  elseif config.profiles and not config.profiles[config.default_profile] then
+    errors[#errors + 1] = "default_profile 不存在: " .. config.default_profile
+  end
+  for name, profile in pairs(config.profiles or {}) do
+    if type(name) ~= "string" or type(profile) ~= "table" then
+      errors[#errors + 1] = "profiles 的键和值必须分别为字符串和 table"
+    elseif profile.source_sets ~= nil
+      and not vim.islist(profile.source_sets)
+      and not util.is_list_operation(profile.source_sets)
+    then
+      errors[#errors + 1] = "profile " .. name .. " 的 source_sets 必须是列表"
+    end
+  end
+  return #errors == 0, errors
+end
+
+function M.local_path(root, base)
+  base = base or defaults.get()
+  return vim.fs.joinpath(base.state_dir, "projects", util.root_hash(root), "config.lua")
+end
+
+function M.project_path(root, base)
+  base = base or defaults.get()
+  return vim.fs.joinpath(root, base.project_file)
+end
+
+function M.load(root, setup_options)
+  local builtin = defaults.get()
+  local global_path = setup_options.global_config or builtin.global_config
+  local global, global_err = read_layer(global_path, false)
+  global = global or {}
+
+  local preliminary = util.merge_many(builtin, global, setup_options)
+  local project_path = M.project_path(root, preliminary)
+  local project, project_err = read_layer(project_path, true)
+  project = project or {}
+
+  local local_path = M.local_path(root, preliminary)
+  local local_config, local_err = read_layer(local_path, false)
+  local_config = local_config or {}
+
+  local machine = util.merge_many(global, setup_options, local_config)
+  local effective = util.merge_many(builtin, global, setup_options, project, local_config)
+  local ok, validation_errors = validate(effective)
+  local errors = {}
+  for _, err in ipairs({ global_err, project_err, local_err }) do
+    if err then
+      errors[#errors + 1] = err
+    end
+  end
+  vim.list_extend(errors, validation_errors)
+
+  return {
+    effective = effective,
+    portable = project,
+    machine = machine,
+    paths = {
+      global = global_path,
+      project = project_path,
+      local_config = local_path,
+    },
+    valid = ok and #errors == 0,
+    errors = errors,
+  }
+end
+
+function M.ensure_local_template(root, options)
+  local path = M.local_path(root, options)
+  if util.exists(path) then
+    return path
+  end
+  local content = [[-- 此文件位于 Neovim state 目录，不应提交到项目仓库。
+return {
+  -- source_sets = {},
+  -- profiles = {},
+  -- tools = { svlint = { cmd = "svlint" } },
+}
+]]
+  local ok, err = util.atomic_write(path, content)
+  if not ok then
+    return nil, err
+  end
+  return path
+end
+
+return M

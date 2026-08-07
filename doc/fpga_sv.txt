@@ -1,0 +1,69 @@
+*fpga_sv.txt*  SystemVerilog project support for Neovim 0.11+
+
+==============================================================================
+1. Setup                                                     *fpga_sv-setup*
+
+>
+  require("fpga_sv").setup()
+<
+
+The plugin uses Slang, Verible/Conform, svlint and Tree-sitter. External tools
+are detected from PATH or explicit `tools.<name>.cmd`; nothing is installed.
+
+==============================================================================
+2. Commands                                               *fpga_sv-commands*
+
+:FpgaSvProfile [name]        Select the active Profile.
+:FpgaSvGenerate              Generate all Profile artifacts.
+:FpgaSvProjectInfo           Show the current project model and errors.
+:FpgaSvEditProjectConfig     Edit the trusted project configuration.
+:FpgaSvEditLocalConfig       Edit the repository-external local configuration.
+:FpgaSvInstantiate [module]  Insert a named-port instance.
+:FpgaSvExpand                Expand positional, shorthand and .* connections.
+:FpgaSvHints                 Toggle semantic port hints.
+:FpgaSvTop [module]          Set the Slang top-level module.
+:FpgaSvLint                  Lint the current file.
+:FpgaSvLintProject           Lint the active Profile into quickfix.
+:FpgaSvTemplate {name}       Expand a native vim.snippet template.
+:FpgaSvNext [kind]           Jump to the next structure.
+:FpgaSvPrev [kind]           Jump to the previous structure.
+:FpgaSvSelect {kind}         Select the enclosing structure.
+
+Compatibility commands:
+SVInstantiate, SVProjectInfo, SVSlangSetBuild, SVSlangSetTop,
+SVPortDirectionsToggle.
+
+==============================================================================
+3. Configuration                                         *fpga_sv-config*
+
+Physical layers:
+
+  stdpath("config")/fpga-sv.lua
+  <project>/.nvim-fpga.lua
+  stdpath("state")/fpga_sv/projects/<hash>/config.lua
+
+Precedence:
+
+  defaults < global < setup() < project < local
+
+Project Lua is read with vim.secure.read(). Lists append and deduplicate by
+default. Explicit { add, remove, replace } operations are supported. File and
+directory entries accept { path = "...", optional = true }.
+
+See README.md for the Source Set and Profile schema.
+
+==============================================================================
+4. Events                                                   *fpga_sv-events*
+
+FpgaSvProfileChanged
+FpgaSvProjectGenerated
+FpgaSvIndexUpdated
+
+==============================================================================
+5. Health                                                   *fpga_sv-health*
+
+Run:
+
+  :checkhealth fpga_sv
+
+vim:tw=78:ts=8:noet:ft=help:norl:
