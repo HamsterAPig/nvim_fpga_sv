@@ -37,7 +37,52 @@
 插件使用 Slang、Verible/Conform、svlint 与 Tree-sitter，不在线安装工具。
 
 ==============================================================================
-2. Source Set 与 Profile                                    *fpga_sv-project*
+2. 配置放在哪里                                              *fpga_sv-config*
+
+插件全局配置：
+
+  <stdpath("config")>/fpga-sv.lua
+  require("fpga_sv").setup({...})
+
+用于工具路径、提示、按键和适配器等跨项目选项。全局文件示例：
+
+>
+  return {
+    tools = {
+      slang = { cmd = "slang-server" },
+      svlint = { cmd = "svlint" },
+      verible = { cmd = "verible-verilog-format" },
+    },
+  }
+<
+
+项目共享配置：
+
+  <project>/.nvim-fpga.lua
+
+用于可提交的 RTL、stub、Source Set、Profile、宏、include 目录和项目级
+flags。快速开始中的配置就是最小共享配置。
+
+项目本机配置：
+
+  :FpgaSvEditLocalConfig
+  <state>/fpga_sv/projects/<project-id>/config.lua
+
+用于厂商库绝对路径、环境变量、本机工具路径和本机专用 Profile，不应提交。
+
+合并顺序：
+
+  内置默认值 < 全局文件 < setup() < 项目共享配置 < 项目本机配置
+
+工具程序路径通常放全局或本机配置；RTL、stub 和项目统一编译参数放共享
+配置；厂商安装路径放本机配置。修改后执行 :FpgaSvRefresh 或
+:FpgaSvGenerate。
+
+.slang/server.json 是 Slang 自身配置，不属于插件项目配置，也不能替代
+活动 Profile 的 .f。插件不会创建、覆盖或迁移它。
+
+==============================================================================
+3. Source Set 与 Profile                                    *fpga_sv-project*
 
 工程链路：
 
@@ -55,22 +100,12 @@
 包含哪些集合。top 只指定顶层模块，不会自动收集依赖文件。是否属于工程
 以活动 Profile 的 .f 为准；同目录文件不会自动加入。
 
-配置层：
-
-  全局配置
-  <project>/.nvim-fpga.lua
-  <state>/fpga_sv/projects/<project-id>/config.lua
-
-优先级：
-
-  defaults < global < setup() < project < local
-
 项目 Lua 由 vim.secure.read() 加载。列表默认追加并去重，也支持
 { add, remove, replace }。文件和目录支持
 { path = "...", optional = true }。
 
 ==============================================================================
-3. 字段摘要                                                *fpga_sv-fields*
+4. 字段摘要                                                *fpga_sv-fields*
 
 Source Set：
 
@@ -97,10 +132,152 @@ Profile：
   lint                Profile 专用 lint 配置。
   default_profile     首次加载的默认 Profile。
 
-完整字段说明与配置用例见 README.md。
+filelists 当前支持：
+
+  - Verilog/SystemVerilog 源码路径。
+  - -I、-D、-y。
+  - +incdir、+define、+libext。
+  - 嵌套 -f/-F。
+
+厂商专用选项若带独立参数，应转换为插件字段，或制作只保留编辑分析内容的
+wrapper .f。include_dirs 只能解决 `include，不能提供模块定义。
+
+replaces 只移除已经由 roots、files 或 filelists 进入 model.files 的准确
+路径，不能移除仅由 library_dirs 提供的模块。
 
 ==============================================================================
-4. 生成产物                                            *fpga_sv-artifacts*
+5. 厂商原语库                                          *fpga_sv-primitives*
+
+unknown module 的处理流程：
+
+  1. 找到厂商提供且 Slang 能解析的 Verilog/SystemVerilog 仿真模型。
+  2. 判断模型是每模块一文件、合并模型文件，还是厂商 .f。
+  3. 执行 :FpgaSvEditLocalConfig。
+  4. 建立 device_primitives Source Set 和 edit_vendor Profile。
+  5. 执行 :FpgaSvGenerate 和 :FpgaSvProfile edit_vendor。
+  6. 用 :FpgaSvProjectInfo 检查活动 Profile、Source Set、本地 .f 和诊断。
+
+每模块一文件：
+
+>
+  local primitive_root = assert(
+    vim.env.FPGA_PRIMITIVE_LIB,
+    "请设置 FPGA_PRIMITIVE_LIB"
+  )
+
+  return {
+    source_sets = {
+      device_primitives = {
+        library_dirs = { primitive_root },
+        library_extensions = { ".v", ".sv" },
+      },
+    },
+    profiles = {
+      edit_vendor = {
+        source_sets = { "rtl", "device_primitives" },
+        top = "demo_top",
+      },
+    },
+  }
+<
+
+多模块合并文件时，将 Source Set 改为：
+
+>
+  device_primitives = {
+    files = {
+      vim.fs.joinpath(primitive_root, "primitive_models.v"),
+    },
+  }
+<
+
+厂商 filelist 时，将 Source Set 改为：
+
+>
+  device_primitives = {
+    filelists = {
+      vim.fs.joinpath(primitive_root, "primitive_models.f"),
+    },
+  }
+<
+
+library_dirs 可供 Slang 按模块名按需解析，但插件的端口提示、
+:FpgaSvInstantiate 和 :FpgaSvExpand 主要索引 model.files。需要这些功能
+时，显式加入选定模型文件，或使用 stub。生成的 .f 只用于编辑分析，不承诺
+可直接用于仿真或综合。
+
+==============================================================================
+6. Stub                                                  *fpga_sv-stubs*
+
+stub 没有插件专用格式。它是普通 .sv/.v 文件，通过 files 加入 Source
+Set；一个文件可以包含一个或多个模块。保存为
+stubs/device_primitives.sv：
+
+>
+  // 仅用于编辑分析，不用于仿真、综合或器件行为验证。
+  module device_pll #(
+    parameter int unsigned MULTIPLY = 8,
+    parameter int unsigned DIVIDE   = 1,
+    parameter string       STARTUP  = "WAIT_LOCK"
+  ) (
+    input  logic refclk,
+    input  logic reset,
+    output logic outclk,
+    output logic locked
+  );
+  endmodule
+
+  // 仅用于编辑分析，不用于仿真、综合或器件行为验证。
+  module device_buf #(
+    parameter string BUFFER_TYPE = "GLOBAL"
+  ) (
+    input  logic i,
+    output logic o
+  );
+  endmodule
+<
+
+共享 .nvim-fpga.lua 定义 stub 和默认 Profile：
+
+>
+  return {
+    source_sets = {
+      rtl = {
+        roots = { "rtl" },
+      },
+      primitive_stubs = {
+        files = { "stubs/device_primitives.sv" },
+      },
+    },
+    profiles = {
+      edit_stub = {
+        source_sets = { "rtl", "primitive_stubs" },
+        top = "demo_top",
+      },
+    },
+    default_profile = "edit_stub",
+  }
+<
+
+本机配置按上一节定义 device_primitives 和 edit_vendor。edit_stub 与
+edit_vendor 必须互斥，避免真实模型和同名 stub 重复定义。
+
+stub 必须与真实原语保持相同模块名；覆盖工程使用的参数名；匹配端口名称、
+方向、位宽、数组和位置顺序；只保留接口，不实现时钟、延迟或器件行为。
+
+验证：
+
+  1. 分别切换 edit_stub 和 edit_vendor。
+  2. 重新生成，检查活动本地 .f 只包含 stub 或真实库之一。
+  3. 用 :FpgaSvProjectInfo 核对 Source Set 和文件数量。
+  4. 搜索同名模块，排除重复定义。
+  5. 核对参数覆盖、端口连接和诊断。
+
+高级 replaces 仅适用于真实模型已经进入 model.files 的情况；通过
+library_dirs 提供的真实模型必须使用互斥 Profile。
+
+==============================================================================
+7. 生成产物                                            *fpga_sv-artifacts*
 
 项目 .f：
 
@@ -122,7 +299,7 @@ slang.json 记录 Profile、build file 与 top。本地 .f 使用 -F 引用项�
   - 路径被 exclude 排除。
 
 ==============================================================================
-5. Slang 生命周期                                          *fpga_sv-slang*
+8. Slang 生命周期                                          *fpga_sv-slang*
 
 插件复用标准 slang_server，不创建第二个自定义 Slang 客户端。
 
@@ -146,7 +323,7 @@ slang.setTopLevel，并报告具体原因。
 无客户端或无返回结果时，提示会包含活动 Profile 和 .f 检查方向。
 
 ==============================================================================
-6. 端口提示                                                *fpga_sv-hints*
+9. 端口提示                                                *fpga_sv-hints*
 
 提示是 virtual text，不会写入源码。模块声明位置由 hints.position 控制；
 例化提示固定为 inline：
@@ -185,10 +362,11 @@ slang.setTopLevel，并报告具体原因。
   ◇ IF
 
 ==============================================================================
-7. 命令                                                  *fpga_sv-commands*
+10. 命令                                                 *fpga_sv-commands*
 
 :FpgaSvProfile [name]        切换活动 Profile。
 :FpgaSvGenerate              生成全部 Profile 产物。
+:FpgaSvRefresh               重新加载配置、生成产物并刷新活动工程。
 :FpgaSvProjectInfo           显示工程模型、文件数量和错误。
 :FpgaSvDefinition            通过当前 slang_server 跳转到定义。
 :FpgaSvEditProjectConfig     编辑受信任的项目配置。
@@ -210,15 +388,18 @@ slang.setTopLevel，并报告具体原因。
   SVPortDirectionsToggle
 
 ==============================================================================
-8. 排错                                                    *fpga_sv-trouble*
+11. 排错                                                   *fpga_sv-trouble*
 
 文件存在但模块未知：
 
-  1. 检查活动 Profile。
-  2. 检查 Profile 是否选择对应 Source Set。
-  3. 检查 :FpgaSvProjectInfo 文件数量。
-  4. 检查活动 .f 是否包含目标文件。
-  5. 不要把源码目录误写入 include_dirs。
+  1. 检查活动 Profile 是否选择真实库或 stub。
+  2. 执行 :FpgaSvGenerate。
+  3. 检查 :FpgaSvProjectInfo 的 Source Set、文件数量和本地 .f。
+  4. 检查 .f 是否包含模型/stub，或预期 -y 与 +libext。
+  5. 不要把模块源码目录误写入 include_dirs。
+  6. 合并模型文件使用 files，厂商 .f 使用 filelists。
+  7. 排除真实模型与同名 stub 同时启用。
+  8. 核对 stub 参数名、端口名、方向、位宽、数组和位置顺序。
 
 gd 没有跳转：
 
@@ -257,7 +438,7 @@ unknown module 通常是文件集合问题。timescale、implicit net、unused
 signal 通常是真实 HDL 诊断。
 
 ==============================================================================
-9. 事件与健康检查                                         *fpga_sv-events*
+12. 事件与健康检查                                        *fpga_sv-events*
 
 FpgaSvProfileChanged
 FpgaSvProjectGenerated

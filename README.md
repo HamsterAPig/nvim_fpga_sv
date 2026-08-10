@@ -56,6 +56,124 @@ require("fpga_sv").setup({
 
 `systemverilog` 文件类型使用的 Tree-sitter parser 名称是 `verilog`。
 
+## 配置放在哪里
+
+插件把配置分成三个边界。先按“是否需要提交、是否依赖当前机器”判断，
+不要把所有选项都塞进 `.nvim-fpga.lua`：
+
+```text
+插件全局配置
+├── <stdpath("config")>/fpga-sv.lua
+└── require("fpga_sv").setup({...})
+    工具路径、提示、按键、适配器等跨项目选项
+
+项目共享配置
+└── <project>/.nvim-fpga.lua
+    可提交的 RTL、stub、Source Set、Profile 和项目级编译参数
+
+项目本机配置
+└── :FpgaSvEditLocalConfig
+    厂商库绝对路径、环境变量及只在本机可用的 Profile
+```
+
+最终配置按以下顺序合并，右侧覆盖左侧；列表默认追加并稳定去重：
+
+```text
+内置默认值 < 全局文件 < setup() < 项目共享配置 < 项目本机配置
+```
+
+### 插件全局配置
+
+全局文件固定为 `<stdpath("config")>/fpga-sv.lua`。它必须返回 table，
+适合保存所有项目通用的工具程序路径：
+
+```lua
+return {
+  tools = {
+    slang = { cmd = "slang-server" },
+    svlint = { cmd = "svlint" },
+    verible = { cmd = "verible-verilog-format" },
+  },
+}
+```
+
+插件管理器中的 `setup()` 也是全局层，适合提示、按键和适配器：
+
+```lua
+require("fpga_sv").setup({
+  hints = {
+    enabled = true,
+    delay = 120,
+  },
+  keymaps = {
+    generate = "<leader>vg",
+    refresh = "<leader>vr",
+  },
+})
+```
+
+若工具路径只在某台机器成立，也可以把 `tools` 写进项目本机配置；不要把
+个人绝对路径提交到项目共享配置。
+
+### 项目共享配置
+
+`<project>/.nvim-fpga.lua` 由 `vim.secure.read()` 加载，可以提交到
+仓库。最小示例：
+
+```lua
+return {
+  source_sets = {
+    rtl = {
+      roots = { "rtl" },
+    },
+  },
+  profiles = {
+    default = {
+      source_sets = { "rtl" },
+      top = "demo_top",
+    },
+  },
+  default_profile = "default",
+}
+```
+
+RTL、可提交的 stub、团队 Source Set/Profile，以及项目统一的宏、
+include 目录、flags 和 timescale 相关编译参数，都应放在这一层。
+
+### 项目本机配置
+
+执行 `:FpgaSvEditLocalConfig` 打开当前项目的本机配置。文件实际位于
+`<state>/fpga_sv/projects/<project-id>/config.lua`，不应提交到仓库。
+下面的最小示例在共享配置已有 `rtl` 的前提下，增加本机厂商原语库：
+
+```lua
+local primitive_root = assert(
+  vim.env.FPGA_PRIMITIVE_LIB,
+  "请设置 FPGA_PRIMITIVE_LIB"
+)
+
+return {
+  source_sets = {
+    device_primitives = {
+      library_dirs = { primitive_root },
+      library_extensions = { ".v", ".sv" },
+    },
+  },
+  profiles = {
+    edit_vendor = {
+      source_sets = { "rtl", "device_primitives" },
+      top = "demo_top",
+    },
+  },
+}
+```
+
+修改任一层后执行 `:FpgaSvRefresh` 重新加载，或执行
+`:FpgaSvGenerate` 重新生成全部 Profile 产物。
+
+`.slang/server.json` 是 Slang 自身的配置文件，不属于插件项目配置，也
+不能替代活动 Profile 生成的 `.f`。插件不会创建、覆盖或迁移它。
+
 ## 快速开始
 
 示例工程完全使用虚构名称：
@@ -124,27 +242,8 @@ Slang 分析完整工程
 - 当前打开的文件可以由 Slang 单独分析，但同目录文件不会自动进入工程。
 - 是否属于工程以活动 Profile 生成的 `.f` 为准。
 
-与原语、模型和 stub 接入相关的配置，建议分成三层：
-
-```text
-可提交的项目配置
-└── RTL、公开模型、stub、团队共享 Profile
-
-机器本地配置
-└── 厂商安装路径、绝对路径、个人工具配置
-
-活动 Profile
-└── 选择真实原语库或 stub，二者不得同时启用
-```
-
-项目配置写在 `<project>/.nvim-fpga.lua`。机器本地配置使用
-`:FpgaSvEditLocalConfig` 打开，实际位于
-`<state>/fpga_sv/projects/<project-id>/config.lua`，不应提交到仓库。
-全局配置和 `setup()` 仍可提供通用默认值，完整合并顺序为：
-
-```text
-内置默认值 < 全局文件 < setup() < 项目文件 < local 文件
-```
+真实原语库和同名 stub 应由互斥 Profile 选择，不能同时进入活动构建。
+配置边界和合并顺序见[配置放在哪里](#配置放在哪里)。
 
 ## 如何选择文件接入方式
 
@@ -232,6 +331,18 @@ files = {
 filelists = { "config/project.f" }
 ```
 
+当前明确支持以下内容：
+
+- Verilog/SystemVerilog 源文件路径。
+- `-I`、`-D`、`-y`，以及它们与参数连写的形式。
+- `+incdir`、`+define`、`+libext`。
+- 嵌套 `-f`、`-F`，以及它们与路径连写的形式。
+
+未知的 `-`/`+` 选项会作为 `flags` 保留，但“选项与参数分成两个 token”
+的厂商专用语法不能可靠推断。遇到这类 `.f`，应把选项转换为
+`include_dirs`、`defines`、`library_dirs`、`library_extensions`、
+`flags` 等插件字段，或制作只保留编辑分析所需内容的 wrapper `.f`。
+
 ### `include_dirs`
 
 生成 `-I`，只用于头文件搜索。把源码目录写入 `include_dirs` 不会编译
@@ -313,7 +424,7 @@ counter_stub = {
 
 `replaces` 只作用于已经由 `roots`、`files` 或 `filelists` 收集到
 `model.files` 的准确路径，不能移除仅通过 `library_dirs` 提供的模块。
-详细顺序和限制见[使用 `replaces` 替换具体模型文件](#使用-replaces-替换具体模型文件)。
+详细顺序和限制见[高级用法：使用 `replaces` 替换具体模型文件](#高级用法使用-replaces-替换具体模型文件)。
 
 ### `exclude`
 
@@ -505,7 +616,8 @@ include_dirs = {
 
 ## FPGA 原语库配置
 
-厂商原语库通常安装在每台机器不同的位置。推荐约定
+看到 `unknown module: device_pll` 时，先确认缺少的是模块定义，而不是
+头文件。厂商原语库通常安装在每台机器不同的位置。推荐约定
 `FPGA_PRIMITIVE_LIB` 环境变量，并把引用该变量的配置写入
 `:FpgaSvEditLocalConfig` 打开的本地配置。这样共享的项目配置只保留
 RTL、公开模型、stub 和团队 Profile，不包含个人绝对路径。
@@ -517,6 +629,21 @@ RTL、公开模型、stub 和团队 Profile，不包含个人绝对路径。
 - 厂商安装路径、绝对路径和个人工具配置应放入本地配置。
 - 启动 Neovim 前设置 `FPGA_PRIMITIVE_LIB`，让同一份本地配置适配不同
   安装位置。
+
+从未知模块到可分析工程的操作流程：
+
+1. 在厂商安装目录中找到 Slang 能解析的 Verilog/SystemVerilog 仿真
+   模型；加密网表或只供专用仿真器使用的格式通常不能直接使用。
+2. 判断模型组织方式：每模块一文件、多模块合并文件，或厂商 `.f`。
+3. 执行 `:FpgaSvEditLocalConfig`，建立 `device_primitives` Source Set。
+4. 在同一本机配置中建立 `edit_vendor` Profile，与共享配置中的 `rtl`
+   组合。
+5. 执行 `:FpgaSvGenerate`，再用 `:FpgaSvProfile edit_vendor` 切换。
+6. 执行 `:FpgaSvProjectInfo`，检查活动 Profile、Source Set、诊断和本地
+   `.f`；本地 `.f` 中必须出现预期模型文件，或 `-y` 与 `+libext`。
+
+下面的模型只用于 Slang 编辑分析。插件生成的 `.f` 不承诺可以直接用于
+厂商仿真、综合或实现流程。
 
 下面三种接入模式覆盖常见的原语库组织方式。示例假设项目配置已经定义
 `rtl` Source Set。
@@ -621,8 +748,12 @@ return {
 }
 ```
 
-插件会解析 `.f` 中的源文件、`-I`、`-D`、`-y`、`+libext` 及嵌套
-`-f`/`-F`，并把结果合并到当前模型。
+插件会解析 `.f` 中的源码、`-I`、`-D`、`-y`、`+incdir`、`+define`、
+`+libext` 及嵌套 `-f`/`-F`，并把结果合并到当前模型。
+
+厂商 `.f` 常包含只对专用仿真器有效的选项。若某个选项另带独立参数，
+解析器可能把后一个 token 当成源码路径。此时应把有效信息转换为插件字段，
+或新建精简 wrapper `.f`，只引用编辑分析需要的源码和嵌套 filelist。
 
 ### 如何判断字段是否选对
 
@@ -646,32 +777,48 @@ stub。不建议为了端口提示扫描整个大型厂商库。
 - 团队不能提交厂商模型。
 - 编辑阶段只需消除 `unknown module` 并检查调用接口。
 
-stub 只描述调用接口，不实现真实器件行为：
+stub 没有插件专用格式。它就是普通 `.sv`/`.v` 源文件，通过 Source Set
+的 `files` 加入；一个文件可以包含一个或多个 stub 模块。下面可保存为
+`stubs/device_primitives.sv`：
 
 ```systemverilog
-// 仅用于编辑分析，不用于仿真或综合。
+// 仅用于编辑分析，不用于仿真、综合或器件行为验证。
 module device_pll #(
-  parameter int unsigned DIVIDE = 1
+  parameter int unsigned MULTIPLY = 8,
+  parameter int unsigned DIVIDE   = 1,
+  parameter string       STARTUP  = "WAIT_LOCK"
 ) (
   input  logic refclk,
   input  logic reset,
-  output wire  outclk,
-  output wire  locked
+  output logic outclk,
+  output logic locked
+);
+endmodule
+
+// 仅用于编辑分析，不用于仿真、综合或器件行为验证。
+module device_buf #(
+  parameter string BUFFER_TYPE = "GLOBAL"
+) (
+  input  logic i,
+  output logic o
 );
 endmodule
 ```
 
-stub 必须尽量匹配真实接口：
+示例模块名和接口是虚构的。落地时必须按工程实际调用和厂商文档逐项匹配：
 
-- 参数名称必须覆盖工程中的参数覆盖。
-- 命名端口必须保持名称一致。
-- 位置端口必须保持数量和顺序一致。
-- 方向、位宽、数组维度、interface/modport 应尽量匹配。
-- 内部行为可以省略，但 stub 不能用于验证真实器件行为。
+- 模块名必须与厂商原语完全一致。
+- 参数名必须覆盖工程中出现的全部参数覆盖。
+- 命名端口的名称必须一致。
+- 位置端口的数量和声明顺序必须一致。
+- 端口方向、packed/unpacked 位宽、数组维度和
+  interface/modport 必须一致。
+- 只保留接口；不要实现时钟生成、锁定过程、延迟或器件行为。
 
 ### 使用独立 Stub Profile
 
-将 stub 作为可提交的项目源码，并为编辑分析建立独立 Profile：
+项目共享配置定义可提交的 `primitive_stubs`，并把 `edit_stub` 设为默认
+Profile：
 
 ```lua
 return {
@@ -681,7 +828,7 @@ return {
     },
     primitive_stubs = {
       files = {
-        "stubs/device_pll.sv",
+        "stubs/device_primitives.sv",
       },
     },
   },
@@ -697,7 +844,32 @@ return {
 }
 ```
 
-推荐让项目配置提供 `edit_stub`，机器本地配置按需增加 `edit_vendor`：
+项目本机配置再定义真实库和 `edit_vendor`。以下示例适用于“每模块一文件”
+的厂商库；合并文件或厂商 `.f` 应分别改用 `files` 或 `filelists`：
+
+```lua
+local primitive_root = assert(
+  vim.env.FPGA_PRIMITIVE_LIB,
+  "请设置 FPGA_PRIMITIVE_LIB"
+)
+
+return {
+  source_sets = {
+    device_primitives = {
+      library_dirs = { primitive_root },
+      library_extensions = { ".v", ".sv" },
+    },
+  },
+  profiles = {
+    edit_vendor = {
+      source_sets = { "rtl", "device_primitives" },
+      top = "demo_top",
+    },
+  },
+}
+```
+
+合并后的两个 Profile 结构如下：
 
 ```text
 edit_stub
@@ -713,7 +885,20 @@ edit_vendor
 可能遇到重复模块定义。使用 `:FpgaSvProfile edit_stub` 或
 `:FpgaSvProfile edit_vendor` 明确选择其中一种。
 
-### 使用 `replaces` 替换具体模型文件
+验证清单：
+
+1. 用 `:FpgaSvProfile edit_stub` 和 `:FpgaSvProfile edit_vendor`
+   分别切换，确认二者都能独立加载。
+2. 执行 `:FpgaSvGenerate`，检查活动本地 `.f` 包含 stub 文件或真实库
+   配置，不能同时包含二者。
+3. 用 `:FpgaSvProjectInfo` 核对活动 Profile、Source Set 和文件数量。
+4. 搜索同名 `module device_pll`、`module device_buf`，排除重复定义。
+5. 对照 RTL 参数覆盖和端口连接，核对参数名、端口名、方向、位宽、数组
+   以及位置端口顺序。
+6. 重新检查诊断；stub 消除 `unknown module` 后，参数或端口错误仍应由
+   Slang 报出。
+
+### 高级用法：使用 `replaces` 替换具体模型文件
 
 只有当真实模型已经由 `roots`、`files` 或 `filelists` 收集时，才使用
 `replaces`：
@@ -938,6 +1123,7 @@ hints = {
 
 - `:FpgaSvProfile [name]`：切换活动 Profile。
 - `:FpgaSvGenerate`：生成全部 Profile，并重新通知 Slang。
+- `:FpgaSvRefresh`：重新加载配置、生成产物并刷新活动工程。
 - `:FpgaSvProjectInfo`：显示工程、错误、文件数量与产物。
 - `:FpgaSvEditLocalConfig`：编辑不提交到仓库的机器本地配置。
 - `:FpgaSvDefinition`：通过当前 `slang_server` 跳转到定义。
