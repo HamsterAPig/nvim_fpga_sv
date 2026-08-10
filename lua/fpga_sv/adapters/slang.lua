@@ -5,6 +5,9 @@ local M = {}
 local config_name = "slang_server"
 local root_markers = { ".nvim-fpga.lua", ".git" }
 local definition_method = "textDocument/definition"
+local watched_files_method = "workspace/didChangeWatchedFiles"
+local changed_file_type = vim.lsp.protocol.FileChangeType.Changed
+local activation_states = setmetatable({}, { __mode = "k" })
 
 local function command(cmd)
   return type(cmd) == "table" and cmd or { cmd }
@@ -118,6 +121,61 @@ local function ensure_index(workspace)
   return indexer.build(workspace, entry.full)
 end
 
+local function activation_bucket(workspace)
+  local bucket = activation_states[workspace]
+  if not bucket then
+    bucket = {}
+    activation_states[workspace] = bucket
+  end
+  return bucket
+end
+
+local function activation_key(client, profile, generation, top)
+  return table.concat({
+    tostring(client.id),
+    profile,
+    tostring(generation),
+    top or "<未设置>",
+  }, "\0")
+end
+
+local function still_current(workspace, profile, generation)
+  return workspace.active_profile == profile
+    and workspace.generation == generation
+end
+
+local function notify_profile_files(client, entry)
+  if type(client.notify) ~= "function" then
+    util.notify(
+      "Slang 无法同步活动 Profile 源码索引；已仅加载 build file",
+      vim.log.levels.ERROR
+    )
+    return false
+  end
+
+  local changes = {}
+  for _, file in ipairs(entry.full.files or {}) do
+    changes[#changes + 1] = {
+      uri = vim.uri_from_fname(file),
+      type = changed_file_type,
+    }
+  end
+  local ok, sent = pcall(client.notify, client, watched_files_method, {
+    changes = changes,
+  })
+  if not ok or sent == false then
+    util.notify(
+      (
+        "Slang 无法同步活动 Profile 源码索引: %s；"
+        .. "已仅加载 build file"
+      ):format(ok and "通知发送失败" or error_message(sent)),
+      vim.log.levels.ERROR
+    )
+    return false
+  end
+  return true
+end
+
 function M.resolve_top(workspace, top)
   local _, build_err = ensure_index(workspace)
   if build_err then
@@ -139,36 +197,82 @@ function M.resolve_top(workspace, top)
   return definitions[1].file
 end
 
-local function send_top(workspace, client, bufnr, top)
-  local path, err = M.resolve_top(workspace, top)
-  if not path then
-    util.notify(err, vim.log.levels.WARN)
-    return false
-  end
-  return exec_command(client, bufnr, "slang.setTopLevel", { path })
-end
-
-local function send_profile(workspace, client, bufnr)
+local function activate_profile(workspace, client, bufnr, requested_top)
   local profile = workspace.active_profile
   local entry = workspace.models and workspace.models[profile]
   if not entry or not entry.artifacts then
     return false
   end
+
+  local generation = workspace.generation
+  local key = activation_key(client, profile, generation, requested_top)
+  local states = activation_bucket(workspace)
+  if states[key] then
+    return true
+  end
+  states[key] = "in_progress"
+
+  local indexed = notify_profile_files(client, entry)
+  if not indexed then
+    -- 通知失败时不自动设置 top，避免 Slang 再次报告 unknown module。
+    states[key] = nil
+    return exec_command(
+      client,
+      bufnr,
+      "slang.setBuildFile",
+      { entry.artifacts.local_filelist }
+    )
+  end
+
   return exec_command(
     client,
     bufnr,
     "slang.setBuildFile",
     { entry.artifacts.local_filelist },
     function(ok)
-      -- Profile 切换期间旧请求可能稍晚返回，不能覆盖新 Profile。
-      if not ok or workspace.active_profile ~= profile then
+      if not ok then
+        states[key] = nil
         return
       end
-      if entry.full.top then
-        send_top(workspace, client, bufnr, entry.full.top)
+      -- Profile 切换或重新生成期间，旧请求不能覆盖新工程状态。
+      if not still_current(workspace, profile, generation) then
+        states[key] = nil
+        return
       end
+      if not requested_top then
+        states[key] = "active"
+        return
+      end
+
+      local path, err = M.resolve_top(workspace, requested_top)
+      if not path then
+        util.notify(err, vim.log.levels.WARN)
+        -- build file 已成功加载；缺失或重复 top 不应触发重复激活。
+        states[key] = "active"
+        return
+      end
+      exec_command(
+        client,
+        bufnr,
+        "slang.setTopLevel",
+        { path },
+        function(top_ok)
+          if not top_ok or not still_current(workspace, profile, generation) then
+            states[key] = nil
+            return
+          end
+          states[key] = "active"
+        end
+      )
     end
   )
+end
+
+local function send_profile(workspace, client, bufnr)
+  local entry = workspace.models and workspace.models[workspace.active_profile]
+  return entry
+    and activate_profile(workspace, client, bufnr, entry.full.top)
+    or false
 end
 
 function M.attach(workspace, bufnr, client_id)
@@ -208,19 +312,9 @@ function M.set_build(workspace, path)
 end
 
 function M.set_top(workspace, top)
-  local path, err = M.resolve_top(workspace, top)
-  if not path then
-    util.notify(err, vim.log.levels.WARN)
-    return false
-  end
   local sent = false
   for _, item in ipairs(workspace_clients(workspace)) do
-    sent = exec_command(
-      item.client,
-      item.bufnr,
-      "slang.setTopLevel",
-      { path }
-    ) or sent
+    sent = activate_profile(workspace, item.client, item.bufnr, top) or sent
   end
   return sent
 end

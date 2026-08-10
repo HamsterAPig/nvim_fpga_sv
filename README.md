@@ -109,6 +109,8 @@ Profile 选择 Source Set
         ↓
 生成活动 Profile 的 .f
         ↓
+同步活动 Profile 源码到 Slang 工作区索引
+        ↓
 发送 slang.setBuildFile
         ↓
 Slang 分析完整工程
@@ -305,8 +307,10 @@ top = "demo_top"
 ```
 
 插件会在活动 Profile 的索引中查找同名 `module`。只有定义唯一时，才将
-对应源码路径发送给 `slang.setTopLevel`。模块缺失或存在同名定义时，
-插件保留已加载的 build file，并提示检查 Profile 与文件集合。
+对应源码路径发送给 `slang.setTopLevel`。发送前，插件会先把活动 Profile
+的全部源码同步到 Slang 工作区索引，再等待 build file 加载成功。模块缺失
+或存在同名定义时，插件保留已加载的 build file，并提示检查 Profile 与
+文件集合。
 
 ### `defines`
 
@@ -489,8 +493,10 @@ vendor/clock_core.v
 - `globs` 没有匹配文件。
 - 路径被 `exclude` 排除。
 
-插件不会修改外部 `.slang/server.json`。该文件可以继续保存索引、hover 等
-Slang 设置；插件生成的活动 `.f` 决定实际编译文件。
+插件不会创建、覆盖或迁移外部 `.slang/server.json`。该文件可以继续保存
+索引、hover 等 Slang 设置；插件生成的活动 `.f` 决定实际编译文件。插件会
+通过 LSP 通知把活动 Profile 的全部源码同步到 Slang 工作区索引，用户无需
+在 `.slang/server.json` 中用 glob 重复覆盖同一份 filelist。
 
 ## Slang 生命周期
 
@@ -501,6 +507,9 @@ slang_server 附着缓冲区
         ↓
 识别缓冲区所属 <project>
         ↓
+发送 workspace/didChangeWatchedFiles
+同步活动 Profile 全部源码（Changed）
+        ↓
 发送 slang.setBuildFile
         ↓
 等待服务器成功回调
@@ -509,6 +518,13 @@ slang_server 附着缓冲区
         ↓
 发送 slang.setTopLevel
 ```
+
+同一客户端、Profile、工程生成版本和 top 只激活一次，避免 `FileType` 与
+`LspAttach` 重复发送。Profile 切换或重新生成后会重新同步。索引通知无法
+发送时，插件只加载完整 build file，不自动设置 top，避免重新产生
+`unknown module`。
+
+当前现场验证基线为 Neovim `0.12.4` 与 slang-server `0.2.9`。
 
 以下操作会重新发送活动构建信息：
 
@@ -670,8 +686,10 @@ unused signal 等通常属于真实 HDL 源码问题。
 
 ### 子目录模块能识别，直属文件不能识别
 
-- 检查 `globs` 是否包含 `*.sv`、`*.v` 等直属文件规则。
-- 检查 Slang 是否收到插件生成的活动 `.f`。
+- 检查 Source Set 的 `globs` 是否包含 `*.sv`、`*.v` 等直属文件规则。
+- 检查 `:FpgaSvProjectInfo` 的文件数量是否已包含直属文件。
+- 插件会同步活动 Profile 全部源码到 Slang 索引，无需再为
+  `.slang/server.json` 添加重复 glob。
 
 ### 每条诊断出现两次
 
