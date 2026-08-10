@@ -135,6 +135,14 @@ function M.setup()
     open_info(current())
   end, {})
 
+  vim.api.nvim_create_user_command("FpgaSvDefinition", function()
+    local workspace = current()
+    require("fpga_sv.adapters.slang").definition(
+      workspace,
+      vim.api.nvim_get_current_buf()
+    )
+  end, {})
+
   vim.api.nvim_create_user_command("FpgaSvEditProjectConfig", function()
     local workspace = current()
     local ok, err = write_project_template(workspace.config.paths.project)
@@ -266,6 +274,7 @@ end
 function M.setup_buffer(workspace, bufnr)
   local maps = workspace.config.effective.keymaps
   local definitions = {
+    definition = { "<cmd>FpgaSvDefinition<cr>", "FPGA: 跳转到定义" },
     profile = { "<cmd>FpgaSvProfile<cr>", "FPGA: 切换 Profile" },
     generate = { "<cmd>FpgaSvGenerate<cr>", "FPGA: 生成工程" },
     instantiate = { "<cmd>FpgaSvInstantiate<cr>", "FPGA: 新建例化" },
@@ -276,11 +285,18 @@ function M.setup_buffer(workspace, bufnr)
   }
   for name, mapping in pairs(maps) do
     if mapping and definitions[name] then
-      vim.keymap.set("n", mapping, definitions[name][1], {
-        buffer = bufnr,
-        silent = true,
-        desc = definitions[name][2],
-      })
+      local exists = name == "definition"
+        and vim.api.nvim_buf_call(bufnr, function()
+          local current_mapping = vim.fn.maparg(mapping, "n", false, true)
+          return type(current_mapping) == "table" and next(current_mapping) ~= nil
+        end)
+      if not exists then
+        vim.keymap.set("n", mapping, definitions[name][1], {
+          buffer = bufnr,
+          silent = true,
+          desc = definitions[name][2],
+        })
+      end
     end
   end
 end

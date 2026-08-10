@@ -304,6 +304,10 @@ source_sets = { "rtl", "vendor_models" }
 top = "demo_top"
 ```
 
+插件会在活动 Profile 的索引中查找同名 `module`。只有定义唯一时，才将
+对应源码路径发送给 `slang.setTopLevel`。模块缺失或存在同名定义时，
+插件保留已加载的 build file，并提示检查 Profile 与文件集合。
+
 ### `defines`
 
 添加当前 Profile 专用宏：
@@ -499,6 +503,10 @@ slang_server 附着缓冲区
         ↓
 发送 slang.setBuildFile
         ↓
+等待服务器成功回调
+        ↓
+将 top 模块名解析为唯一源码路径
+        ↓
 发送 slang.setTopLevel
 ```
 
@@ -512,6 +520,19 @@ slang_server 附着缓冲区
 插件初始化时也会补挂载已经打开的 Verilog/SystemVerilog 缓冲区。同一
 缓冲区只保留一个标准 Slang 客户端，避免重复诊断。可用 `:LspInfo`
 检查客户端数量。
+
+SystemVerilog/Verilog 缓冲区默认使用 `gd` 执行
+`:FpgaSvDefinition`，并将标准 `textDocument/definition` 请求发送给
+当前附着的 `slang_server`。已有的用户或 LazyVim `gd` 映射不会被覆盖：
+
+```lua
+keymaps = {
+  definition = "gd", -- 设为 false 可禁用
+}
+```
+
+若当前缓冲区没有 Slang 客户端，或服务器没有返回定义，提示会包含活动
+Profile，并引导检查生成的 `.f` 是否包含目标源码。
 
 ## 端口提示
 
@@ -611,10 +632,11 @@ hints = {
 - `:FpgaSvProfile [name]`：切换活动 Profile。
 - `:FpgaSvGenerate`：生成全部 Profile，并重新通知 Slang。
 - `:FpgaSvProjectInfo`：显示工程、错误、文件数量与产物。
+- `:FpgaSvDefinition`：通过当前 `slang_server` 跳转到定义。
 - `:FpgaSvInstantiate [module]`：生成命名端口例化。
 - `:FpgaSvExpand`：展开位置连接、`.port` 与 `.*`。
 - `:FpgaSvHints`：开关并刷新端口提示。
-- `:FpgaSvTop [module]`：通知 Slang top。
+- `:FpgaSvTop [module]`：将模块名解析为唯一源码路径后通知 Slang。
 - `:FpgaSvLint`：lint 当前文件。
 - `:FpgaSvLintProject`：lint 活动 Profile，结果写入 quickfix。
 - `:FpgaSvTemplate <name>`：展开原生 `vim.snippet` 模板。
@@ -637,6 +659,14 @@ hints = {
 
 `unknown module` 通常属于文件集合问题；`timescale`、implicit net、
 unused signal 等通常属于真实 HDL 源码问题。
+
+### `gd` 没有跳转
+
+1. 执行 `:LspInfo`，确认当前缓冲区附着 `slang_server`。
+2. 检查活动 Profile 是否包含目标模块。
+3. 检查生成的 `.f` 是否包含目标源码。
+4. 若 `gd` 已由用户或 LazyVim 定义，可直接执行
+   `:FpgaSvDefinition` 验证 Slang definition。
 
 ### 子目录模块能识别，直属文件不能识别
 

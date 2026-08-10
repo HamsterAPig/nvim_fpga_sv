@@ -90,7 +90,7 @@ Source Set：
 Profile：
 
   source_sets         必须显式列出启用集合；空列表生成空文件集合。
-  top                 Slang 顶层模块。
+  top                 Slang 顶层模块名；唯一解析后发送源码路径。
   defines             Profile 专用宏。
   include_dirs        Profile 专用头文件目录。
   flags               Profile 专用参数。
@@ -129,11 +129,21 @@ slang.json 记录 Profile、build file 与 top。本地 .f 使用 -F 引用项�
 在 LspAttach 后，插件按缓冲区所属工程发送：
 
   slang.setBuildFile
+  等待服务器成功回调
+  在活动 Profile 索引中将 top 模块名解析为唯一源码路径
   slang.setTopLevel
 
 :FpgaSvGenerate、:FpgaSvRefresh、配置保存和 :FpgaSvProfile 会重新发送
 活动构建信息。setup() 也会补挂载已经打开的 Verilog/SystemVerilog
 缓冲区。同一缓冲区只保留一个标准 slang_server，可用 :LspInfo 检查。
+
+top 模块缺失或定义不唯一时，插件保留 build file，不发送无效的
+slang.setTopLevel，并报告具体原因。
+
+默认 keymaps.definition = "gd"。只有 gd 尚未被用户或 LazyVim 定义时，
+插件才为当前 HDL 缓冲区创建映射。设为 false 可禁用。gd 调用
+:FpgaSvDefinition，并使用当前附着 slang_server 的标准 definition 请求。
+无客户端或无返回结果时，提示会包含活动 Profile 和 .f 检查方向。
 
 ==============================================================================
 6. 端口提示                                                *fpga_sv-hints*
@@ -180,12 +190,13 @@ slang.json 记录 Profile、build file 与 top。本地 .f 使用 -F 引用项�
 :FpgaSvProfile [name]        切换活动 Profile。
 :FpgaSvGenerate              生成全部 Profile 产物。
 :FpgaSvProjectInfo           显示工程模型、文件数量和错误。
+:FpgaSvDefinition            通过当前 slang_server 跳转到定义。
 :FpgaSvEditProjectConfig     编辑受信任的项目配置。
 :FpgaSvEditLocalConfig       编辑 <state>/fpga_sv 中的本地配置。
 :FpgaSvInstantiate [module]  插入命名端口例化。
 :FpgaSvExpand                展开位置、简写和 .* 连接。
 :FpgaSvHints                 开关并刷新端口提示。
-:FpgaSvTop [module]          设置 Slang 顶层模块。
+:FpgaSvTop [module]          解析模块名并设置 Slang 顶层源码。
 :FpgaSvLint                  lint 当前文件。
 :FpgaSvLintProject           lint 活动 Profile 到 quickfix。
 :FpgaSvTemplate {name}       展开 vim.snippet 模板。
@@ -208,6 +219,12 @@ slang.json 记录 Profile、build file 与 top。本地 .f 使用 -F 引用项�
   3. 检查 :FpgaSvProjectInfo 文件数量。
   4. 检查活动 .f 是否包含目标文件。
   5. 不要把源码目录误写入 include_dirs。
+
+gd 没有跳转：
+
+  1. 用 :LspInfo 确认当前缓冲区附着 slang_server。
+  2. 检查活动 Profile 和生成的 .f 是否包含目标源码。
+  3. 已有 gd 映射时，直接执行 :FpgaSvDefinition 验证。
 
 子目录模块可识别、直属文件不可识别：
 

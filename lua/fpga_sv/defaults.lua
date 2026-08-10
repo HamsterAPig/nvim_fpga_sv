@@ -86,6 +86,7 @@ function M.get()
       batch_size = 200,
     },
     keymaps = {
+      definition = "gd",
       profile = "<leader>vp",
       generate = "<leader>vg",
       instantiate = "<leader>vi",
