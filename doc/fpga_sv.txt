@@ -233,7 +233,13 @@ gd 没有跳转：
 
 重复诊断：
 
-  - 用 :LspInfo 检查 slang_server 数量。
+  - 用 :LspInfo 检查 slang_server 数量；多个 slang_server 表示 LSP
+    配置或自动启用逻辑重复。
+  - 同时附着一个 slang_server 和一个 verible 属于正常情况，插件不会
+    跨客户端合并诊断。
+  - 只有一个 slang_server 时，旧版 Slang 可能在单次发布中包含精确
+    重复项。插件仅合并完整 LSP Diagnostic 对象完全相同的项，属性不同
+    的诊断仍会保留。
 
 无端口提示：
 

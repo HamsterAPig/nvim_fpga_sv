@@ -693,7 +693,14 @@ unused signal 等通常属于真实 HDL 源码问题。
 
 ### 每条诊断出现两次
 
-执行 `:LspInfo`，确认当前缓冲区只有一个 `slang_server`。
+先执行 `:LspInfo` 区分重复来源：
+
+- 若当前缓冲区附着多个 `slang_server`，请检查重复的 LSP 配置或自动启用逻辑。
+- 同时附着一个 `slang_server` 和一个 `verible` 属于正常情况；插件不会跨客户端合并诊断。
+- 若只有一个 `slang_server`，旧版 Slang 可能在一次
+  `textDocument/publishDiagnostics` 中发布精确重复项。插件会在该 Slang
+  发布包内按完整 LSP Diagnostic 对象去重；位置、级别、代码、相关信息或
+  `data` 不同的诊断仍会保留。
 
 ### 没有端口方向提示
 

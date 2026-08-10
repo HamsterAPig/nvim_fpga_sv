@@ -1,10 +1,12 @@
 local util = require("fpga_sv.util")
 local indexer = require("fpga_sv.index")
+local diagnostics = require("fpga_sv.adapters.slang_diagnostics")
 local M = {}
 
 local config_name = "slang_server"
 local root_markers = { ".nvim-fpga.lua", ".git" }
 local definition_method = "textDocument/definition"
+local publish_diagnostics_method = "textDocument/publishDiagnostics"
 local watched_files_method = "workspace/didChangeWatchedFiles"
 local changed_file_type = vim.lsp.protocol.FileChangeType.Changed
 local activation_states = setmetatable({}, { __mode = "k" })
@@ -17,11 +19,15 @@ function M.setup(options)
   if not options.enabled or not util.executable(options.cmd) then
     return false
   end
+  local existing_config = vim.lsp.config[config_name]
   local lsp_config = {
     cmd = command(options.cmd),
     filetypes = { "systemverilog", "verilog" },
     root_markers = root_markers,
     settings = options.settings,
+    handlers = {
+      [publish_diagnostics_method] = diagnostics.handler(existing_config),
+    },
   }
   local ok = pcall(vim.lsp.config, config_name, lsp_config)
   if ok then

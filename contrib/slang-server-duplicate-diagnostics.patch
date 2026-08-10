@@ -1,0 +1,65 @@
+From: nvim_fpga_sv contributors
+Subject: [PATCH] Clear stale diagnostics before top-level compilation
+
+slang.setBuildFile builds and publishes diagnostics through the no-argument
+createCompilation() overload, which clears the diagnostic client first.
+slang.setTopLevel immediately rebuilds through createCompilation(doc, top),
+but that overload currently appends the same diagnostics to the previous
+publication.
+
+Clear the diagnostic client before issuing diagnostics for the top-level
+dependency graph. ServerDiagClient::clear() marks previously published URIs
+dirty, so pushDiags() also publishes empty lists for files that leave the
+active compilation.
+
+Add a regression test for the setBuildFile -> setTopLevel sequence and compare
+the serialized full LSP Diagnostic objects so diagnostics that merely share a
+position or message are not treated as duplicates.
+
+diff --git a/src/ServerDriver.cpp b/src/ServerDriver.cpp
+--- a/src/ServerDriver.cpp
++++ b/src/ServerDriver.cpp
+@@ -440,6 +440,7 @@ bool ServerDriver::createCompilation(std::shared_ptr<SlangDoc> doc,
+     diagEngine.setMappingsFromPragmas();
+ 
+     // Publish initial diags
++    diagClient->clear();
+     for (const auto& doc : documents) {
+         doc->issueParseDiagnostics(diagEngine);
+     }
+diff --git a/tests/cpp/CompilationTests.cpp b/tests/cpp/CompilationTests.cpp
+--- a/tests/cpp/CompilationTests.cpp
++++ b/tests/cpp/CompilationTests.cpp
+@@ -4,6 +4,7 @@
+ #include "lsp/LspTypes.h"
+ #include "utils/ServerHarness.h"
+ #include <cstdlib>
++#include <unordered_set>
+ 
+ TEST_CASE("SetBuildFile") {
+     ServerHarness server("comp_repo");
+@@ -28,6 +29,24 @@ TEST_CASE("SetTopLevel") {
+     CHECK(scope.size() > 0);
+ }
+ 
++TEST_CASE("SetBuildFileThenTopLevelDoesNotDuplicateDiagnostics") {
++    ServerHarness server("comp_repo");
++
++    auto hdl = server.openFile("cpu.sv");
++    server.setBuildFile("cpu_design.f");
++    server.setTopLevel(std::string{hdl.m_uri.getPath()});
++
++    auto diagnostics = hdl.getDiagnostics();
++    CHECK(!diagnostics.empty());
++
++    std::unordered_set<std::string> fingerprints;
++    for (const auto& diagnostic : diagnostics) {
++        // JSON includes range, message, severity, code, related information, and data.
++        auto fingerprint = rfl::json::write(diagnostic);
++        CHECK(fingerprints.emplace(fingerprint).second);
++    }
++}
++
+ TEST_CASE("ServerStateSwitching") {
+     ServerHarness server("comp_repo");
+ 
