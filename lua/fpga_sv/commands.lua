@@ -101,6 +101,19 @@ local function open_info(workspace)
           .. " -> " .. override.device .. " (" .. override.path .. ")"
       end
     end
+    lines[#lines + 1] = "  matched library files:"
+    if #(model.library_files or {}) == 0 then
+      lines[#lines + 1] = "    <无>"
+    else
+      for _, matched in ipairs(model.library_files) do
+        local source = matched.device
+          and ("device: " .. matched.device)
+          or "project"
+        lines[#lines + 1] = "    " .. matched.module .. " -> "
+          .. matched.path .. " [" .. matched.library_dir .. "]"
+          .. " (" .. source .. ")"
+      end
+    end
     vim.list_extend(lines, {
       "",
       "工程模型:",

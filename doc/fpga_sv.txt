@@ -138,7 +138,7 @@ Source Set：
   module_files        仅器件目录；按实例把模块映射到绝对模型文件。
   filelists           导入 .f；嵌套路径相对当前 filelist。
   include_dirs        生成 -I，只搜索头文件，不编译目录模块。
-  library_dirs        生成 -y。
+  library_dirs        生成 -y，并按实际实例物化同名库文件。
   library_extensions  生成 +libext+...。
   defines             无值宏或带值宏。
   flags               原样传递额外编译参数。
@@ -186,7 +186,7 @@ unknown module 的处理流程：
 
 >
   local vendor_root =
-    [[D:\FPGA\Vendor\Toolchain_Release]]
+    assert(vim.env.FPGA_VENDOR_ROOT, "请设置 FPGA_VENDOR_ROOT")
   local family_root = vim.fs.joinpath(
     vendor_root,
     "simulation",
@@ -206,7 +206,8 @@ unknown module 的处理流程：
 <
 
 module_files 不扫描整个厂商目录，也不读取未命中的映射文件。已命中的文件
-只进入本地 .f；:FpgaSvProjectInfo 显示实际命中和依赖覆盖关系。
+只进入本地 .f；:FpgaSvProjectInfo 显示实际命中和依赖覆盖关系。显式
+module_files 优先于 library_dirs 自动搜索。
 
 每模块一文件：
 
@@ -244,9 +245,12 @@ module_files 不扫描整个厂商目录，也不读取未命中的映射文件�
   }
 <
 
-library_dirs 可供 Slang 按模块名按需解析，但插件的端口提示、
-:FpgaSvInstantiate 和 :FpgaSvExpand 主要索引 model.files。需要这些功能
-时，显式加入选定模型文件，或使用 stub。生成的 .f 只用于编辑分析，不承诺
+slang-server 0.2.9 不会在 build-file 中通过 SourceLoader 展开
+-y/+libext。插件会先预扫描已有模块定义，再按 library_dirs 顺序、然后按
+library_extensions 顺序，非递归精确查找 <模块名><扩展名>。实际命中文件
+显式进入 .f 和 model.files，文件内实例继续递归解析，同时仍保留 -y 和
++libext。未命中不阻断生成。文件名与模块名不一致或多模块合并文件仍应使用
+module_files、files、filelists 或 stub。生成的 .f 只用于编辑分析，不承诺
 可直接用于仿真或综合。
 
 ==============================================================================
@@ -411,7 +415,7 @@ slang.setTopLevel，并报告具体原因。
 :FpgaSvProfile [name]        切换活动 Profile。
 :FpgaSvGenerate              生成全部 Profile 产物。
 :FpgaSvRefresh               重新加载配置、生成产物并刷新活动工程。
-:FpgaSvProjectInfo           显示工程模型、模块映射、文件数量和错误。
+:FpgaSvProjectInfo           显示模块映射、库文件命中、文件数量和错误。
 :FpgaSvDefinition            通过当前 slang_server 跳转到定义。
 :FpgaSvEditGlobalConfig      编辑插件全局配置。
 :FpgaSvEditDeviceCatalog     编辑本机共享器件目录。
@@ -441,7 +445,8 @@ slang.setTopLevel，并报告具体原因。
   1. 检查活动 Profile 是否选择真实库或 stub。
   2. 执行 :FpgaSvGenerate。
   3. 检查 :FpgaSvProjectInfo 的 Source Set、文件数量和本地 .f。
-  4. 检查命中的 module_files，以及 .f 中模型/stub、-y 与 +libext。
+  4. 检查命中的 module_files、库文件，以及 .f 中模型/stub、-y 与
+     +libext。
   5. 不要把模块源码目录误写入 include_dirs。
   6. 合并模型文件使用 files，厂商 .f 使用 filelists。
   7. 排除真实模型与同名 stub 同时启用。

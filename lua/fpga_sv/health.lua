@@ -46,17 +46,17 @@ function M.check()
   end
 
   local profile = workspace.config.effective.profiles[workspace.active_profile]
+  local entry = workspace.models and workspace.models[workspace.active_profile]
+  local model = entry and entry.full
+  if not model and workspace.config.valid then
+    model = project.build(
+      workspace.root,
+      workspace.config.effective,
+      workspace.active_profile,
+      catalog
+    )
+  end
   if profile and profile.device then
-    local entry = workspace.models and workspace.models[workspace.active_profile]
-    local model = entry and entry.full
-    if not model then
-      model = project.build(
-        workspace.root,
-        workspace.config.effective,
-        workspace.active_profile,
-        catalog
-      )
-    end
     local device = model and model.device
     if device and device.status == "loaded" then
       vim.health.ok(
@@ -98,6 +98,24 @@ function M.check()
     end
   else
     vim.health.ok("活动 Profile 未配置器件，保持原有工程行为")
+  end
+  if model then
+    vim.health.ok(
+      "library_dirs 实际命中: "
+        .. tostring(#(model.library_files or {}))
+    )
+    for _, matched in ipairs(model.library_files or {}) do
+      local source = matched.device and ("；器件: " .. matched.device) or ""
+      vim.health.ok(
+        "库模块: "
+          .. matched.module
+          .. " -> "
+          .. matched.path
+          .. "；目录: "
+          .. matched.library_dir
+          .. source
+      )
+    end
   end
 
   for _, name in ipairs({ "slang", "svlint", "verible" }) do

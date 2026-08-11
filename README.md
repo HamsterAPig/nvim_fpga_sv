@@ -127,8 +127,10 @@ require("fpga_sv").setup({
 
 ```lua
 -- 更换厂商工具版本或安装位置时，只修改这一行。
-local vendor_root =
-  [[D:\FPGA\Vendor\Toolchain_Release]]
+local vendor_root = assert(
+  vim.env.FPGA_VENDOR_ROOT,
+  "请设置 FPGA_VENDOR_ROOT"
+)
 
 local family_root = vim.fs.joinpath(
   vendor_root,
@@ -153,7 +155,8 @@ return {
 `depends_on` 是有序器件 ID 列表，支持多级、多父级和共享依赖去重。
 `module_files` 将模块名映射到合并模型文件；只有活动 Profile 实际例化
 对应模块时才加入本地 `.f`，并递归加载已映射的模型依赖。同一映射文件
-稳定去重，循环实例关系会安全终止。
+稳定去重，循环实例关系会安全终止。显式映射优先于 `library_dirs` 自动
+搜索。
 
 推荐在目录顶部定义厂商 Root，再派生版本/系列 Root，最后编写器件条目。
 一个目录可以定义多个 Root；厂商升级时只需修改对应的顶部变量，不需要
@@ -365,7 +368,7 @@ module_files = {
 
 键必须是合法模块名，值必须是存在的绝对文件路径。器件依赖先合并，后加载
 器件的同名映射覆盖前面的公共依赖。映射文件只写入本地 `.f`，不会进入
-可提交的项目 `.f`。
+可提交的项目 `.f`。显式映射优先于同名 `library_dirs` 文件。
 
 ### `filelists`
 
@@ -398,12 +401,21 @@ include_dirs = { "include", "rtl/include" }
 
 ### `library_dirs`
 
-生成 `-y`，配合 `library_extensions` 按模块名搜索库模块。它适合
-“每个模块一个文件”的库目录，不适合多个模块合并在单个文件中的模型库。
+生成 `-y`，并配合 `library_extensions` 物化活动工程实际例化的库模块。
+插件先预扫描已有模块定义；未定义模块按 `library_dirs` 顺序、再按
+`library_extensions` 顺序，非递归精确查找
+`<模块名><扩展名>`。命中文件会显式加入 `.f` 和 Slang 索引，并继续递归
+解析其中的实例。未命中不会阻断生成，真正的 `unknown module` 仍由 Slang
+报告。
 
 ```lua
 library_dirs = { "vendor" }
 ```
+
+slang-server 0.2.9 的 build-file 处理不会通过 `SourceLoader` 展开
+`-y`/`+libext`。插件因此显式加入实际命中的文件，同时保留原始参数，兼容
+其他工具及未来修复该行为的 Slang 版本。文件名与模块名不一致，或多个模块
+合并在单个文件中时，必须使用 `module_files`、`files` 或 `filelists`。
 
 厂商原语库的本地配置方式见[FPGA 原语库配置](#fpga-原语库配置)。
 
@@ -708,8 +720,10 @@ include_dirs = {
 `module_files`。它不会扫描整个厂商目录，也不会读取未命中的映射文件：
 
 ```lua
-local vendor_root =
-  [[D:\FPGA\Vendor\Toolchain_Release]]
+local vendor_root = assert(
+  vim.env.FPGA_VENDOR_ROOT,
+  "请设置 FPGA_VENDOR_ROOT"
+)
 local family_root = vim.fs.joinpath(
   vendor_root,
   "simulation",
@@ -755,10 +769,13 @@ return {
 ```text
 -y <primitive-library>
 +libext+.v+.sv
+<primitive-library>/<instantiated-module>.v
 ```
 
-`library_dirs` 适合 Slang 按模块名按需解析的库，不需要为了消除
-`unknown module` 把整个库扫描进 `model.files`。
+插件不会扫描整个目录，只会把活动工程实际例化且文件名精确匹配的模块加入
+`model.files`。搜索顺序是目录优先、扩展名次之；库文件中的实例会继续递归
+解析。`:FpgaSvProjectInfo` 和 `:checkhealth fpga_sv` 会单独显示这些实际
+命中，区别于显式 `module_files`。
 
 ### 单个或少量合并模型文件
 
@@ -817,16 +834,16 @@ return {
 ### 如何判断字段是否选对
 
 - `module_files` 适合按模块选择合并模型文件，避免扫描大型厂商目录。
-- `library_dirs` 适合按模块拆文件并按需搜索的库。
+- `library_dirs` 适合模块名与文件名一致、按模块拆文件的库。
 - 合并模型文件必须通过 `files` 或 `filelists` 显式加入。
 - `include_dirs` 只搜索 `` `include `` 文件，不能解决
   `unknown module`。
 - `library_extensions` 必须写成带点的扩展名，例如 `.v`、`.sv`。
 
-Slang 可以通过 `library_dirs` 按需解析模块，但插件自己的端口提示、
-`:FpgaSvInstantiate` 和 `:FpgaSvExpand` 主要索引 `model.files`。如果需要
-对某个原语使用这些功能，请用 `files` 显式加入所需模型文件，或提供轻量
-stub。不建议为了端口提示扫描整个大型厂商库。
+实际命中的库文件会进入 `model.files`，因此 Slang、端口提示、
+`:FpgaSvInstantiate` 和 `:FpgaSvExpand` 使用同一文件集合。无法按精确
+文件名命中的模型仍应改用 `module_files`、`files`、`filelists` 或轻量
+stub。
 
 ## 手写 Stub 模块
 
@@ -1173,7 +1190,8 @@ hints = {
 - `:FpgaSvProfile [name]`：切换活动 Profile。
 - `:FpgaSvGenerate`：生成全部 Profile，并重新通知 Slang。
 - `:FpgaSvRefresh`：重新加载配置、生成产物并刷新活动工程。
-- `:FpgaSvProjectInfo`：显示工程、实际命中的模块映射、文件数量与产物。
+- `:FpgaSvProjectInfo`：显示工程、模块映射、实际命中的库文件、文件数量
+  与产物。
 - `:FpgaSvEditGlobalConfig`：编辑插件全局配置。
 - `:FpgaSvEditDeviceCatalog`：编辑本机共享器件目录。
 - `:FpgaSvEditProjectConfig`：编辑可提交的项目配置。
@@ -1200,8 +1218,8 @@ hints = {
 1. 执行 `:FpgaSvProfile`，确认当前选择了真实库或 stub Profile。
 2. 执行 `:FpgaSvGenerate`。
 3. 用 `:FpgaSvProjectInfo` 检查 Source Set、文件数量和生成产物。
-4. 检查实际命中的 `module_files`，以及本地 `.f` 中预期的 `-y`、
-   `+libext`、模型文件或 stub 文件。
+4. 检查实际命中的 `module_files` 和库文件，以及本地 `.f` 中预期的
+   `-y`、`+libext`、模型文件或 stub 文件。
 5. 确认没有把模块源码目录误放到 `include_dirs`。
 6. 确认合并模型文件使用的是 `files` 或 `filelists`。
 7. 搜索同名模块，排除真实模型与 stub 同时启用。

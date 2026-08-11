@@ -164,8 +164,10 @@ function M.ensure_device_catalog_template(path)
   return ensure_template(path, [=[-- 本机共享器件目录；这里可以安全保存厂商模型的绝对路径。
 -- 工程通过 profiles.<name>.device 引用器件 ID。
 -- 更换厂商版本或安装位置时，只修改顶部 Root。
-local vendor_root =
-  [[D:\FPGA\Vendor\Toolchain_Release]]
+local vendor_root = assert(
+  vim.env.FPGA_VENDOR_ROOT,
+  "请设置 FPGA_VENDOR_ROOT"
+)
 
 local family_root = vim.fs.joinpath(
   vendor_root,

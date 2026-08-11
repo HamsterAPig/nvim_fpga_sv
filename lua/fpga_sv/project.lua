@@ -27,7 +27,9 @@ local function add_path(list, seen, path)
   if not seen[key] then
     seen[key] = true
     list[#list + 1] = path
+    return true
   end
+  return false
 end
 
 local function resolve_required(value, base, kind, errors)
@@ -435,6 +437,7 @@ local function empty_model(root, name, profile)
     defines = {},
     library_dirs = {},
     library_extensions = {},
+    library_files = {},
     module_files = {},
     module_file_sources = {},
     module_file_overrides = {},
@@ -452,6 +455,7 @@ local function empty_model(root, name, profile)
       include_dirs = {},
       library_dirs = {},
     },
+    _library_dir_devices = {},
   }
 end
 
@@ -518,7 +522,9 @@ local function collect_device_entry(model, id, entry, errors)
   for _, value in ipairs(entry.library_dirs or {}) do
     local path = resolve_device_path(value, "器件 " .. id .. " 库目录", errors)
     if path then
-      add_path(model.library_dirs, model._seen.library_dirs, path)
+      if add_path(model.library_dirs, model._seen.library_dirs, path) then
+        model._library_dir_devices[util.path_key(path)] = id
+      end
     end
   end
   local module_names = vim.tbl_keys(entry.module_files or {})
@@ -559,7 +565,11 @@ end
 local function merge_model(target, source)
   for _, field in ipairs({ "files", "include_dirs", "library_dirs" }) do
     for _, path in ipairs(source[field] or {}) do
-      add_path(target[field], target._seen[field], path)
+      local added = add_path(target[field], target._seen[field], path)
+      if field == "library_dirs" and added then
+        local key = util.path_key(path)
+        target._library_dir_devices[key] = source._library_dir_devices[key]
+      end
     end
   end
   for name, value in pairs(source.defines or {}) do
@@ -623,44 +633,124 @@ local function build_device(root, profile_name, device_id, catalog)
   return nil, info
 end
 
-local function resolve_mapped_modules(model)
+local function resolve_module_dependencies(model)
   local device = model.device
   local device_model = device and device.model
-  if not device_model or not next(device_model.module_files or {}) then
+  if not next(device_model and device_model.module_files or {})
+    and (#model.library_dirs == 0 or #model.library_extensions == 0)
+  then
     return
   end
 
   local queue = vim.deepcopy(model.files)
+  local parsed_files = {}
+  local defined_modules = {}
   local scanned_files = {}
-  local selected_modules = {}
+  local resolved_modules = {}
   local cursor = 1
 
-  -- 只读取活动 Profile 已收集的源码；命中映射后再递归读取对应模型。
+  local function parse_file(path)
+    local key = util.path_key(path)
+    if parsed_files[key] then
+      return parsed_files[key]
+    end
+    local parsed = {
+      definitions = {},
+      instances = {},
+    }
+    local text = util.read_file(path)
+    if text then
+      for _, symbol in ipairs(indexer.parse_text(text, path).symbols or {}) do
+        if symbol.kind == "module" then
+          parsed.definitions[symbol.name] = true
+        elseif symbol.kind == "instance" then
+          parsed.instances[#parsed.instances + 1] = symbol
+        end
+      end
+    end
+    parsed_files[key] = parsed
+    return parsed
+  end
+
+  local function register_definitions(path)
+    local parsed = parse_file(path)
+    for module_name in pairs(parsed.definitions) do
+      defined_modules[module_name] = true
+    end
+    return parsed
+  end
+
+  local function enqueue(path, device_id)
+    if add_path(model.files, model._seen.files, path) then
+      queue[#queue + 1] = path
+    end
+    if device_id and device_model then
+      add_path(device_model.files, device_model._seen.files, path)
+    end
+    register_definitions(path)
+  end
+
+  local function find_library_file(module_name)
+    for _, library_dir in ipairs(model.library_dirs) do
+      for _, extension in ipairs(model.library_extensions) do
+        local path = vim.fs.normalize(
+          vim.fs.joinpath(library_dir, module_name .. extension)
+        )
+        local stat = (vim.uv or vim.loop).fs_stat(path)
+        if stat and stat.type == "file" then
+          return path, library_dir
+        end
+      end
+    end
+  end
+
+  -- 先收集活动 Profile 已有定义，避免同名工程模块触发库目录回退。
+  for _, path in ipairs(queue) do
+    register_definitions(path)
+  end
+
+  -- 映射优先；否则按目录、扩展名顺序精确查找并递归展开依赖。
   while cursor <= #queue do
     local path = queue[cursor]
     cursor = cursor + 1
     local path_key = util.path_key(path)
     if not scanned_files[path_key] then
       scanned_files[path_key] = true
-      local text = util.read_file(path)
-      if text then
-        for _, instance in ipairs(indexer.parse_instances(text)) do
-          local module_name = instance.type
-          local mapped_path = device_model.module_files[module_name]
-          if mapped_path and not selected_modules[module_name] then
-            selected_modules[module_name] = true
+      for _, instance in ipairs(parse_file(path).instances) do
+        local module_name = instance.type
+        if not resolved_modules[module_name] then
+          resolved_modules[module_name] = true
+          local mapped_path = device_model
+            and device_model.module_files[module_name]
+          if mapped_path then
             device.module_files[#device.module_files + 1] = {
               module = module_name,
               path = mapped_path,
               device = device_model.module_file_sources[module_name],
             }
-            add_path(
-              device_model.files,
-              device_model._seen.files,
-              mapped_path
+            enqueue(
+              mapped_path,
+              device_model.module_file_sources[module_name]
             )
-            add_path(model.files, model._seen.files, mapped_path)
-            queue[#queue + 1] = mapped_path
+          elseif not defined_modules[module_name] then
+            local library_path, library_dir =
+              find_library_file(module_name)
+            if library_path then
+              local device_id =
+                model._library_dir_devices[util.path_key(library_dir)]
+              local matched = {
+                module = module_name,
+                path = library_path,
+                library_dir = library_dir,
+                device = device_id,
+              }
+              model.library_files[#model.library_files + 1] = matched
+              if device_id and device_model then
+                device_model.library_files[#device_model.library_files + 1] =
+                  vim.deepcopy(matched)
+              end
+              enqueue(library_path, device_id)
+            end
           end
         end
       end
@@ -751,13 +841,15 @@ function M.build(root, config, profile_name, device_catalog)
   end
   add_defines(model.defines, profile.defines)
   vim.list_extend(model.flags, profile.flags or {})
-  resolve_mapped_modules(model)
   model.library_extensions = util.unique(model.library_extensions)
+  resolve_module_dependencies(model)
   model.flags = util.unique(model.flags)
   if model.device and model.device.model then
     model.device.model._seen = nil
+    model.device.model._library_dir_devices = nil
   end
   model._seen = nil
+  model._library_dir_devices = nil
 
   if #errors > 0 then
     return nil, errors

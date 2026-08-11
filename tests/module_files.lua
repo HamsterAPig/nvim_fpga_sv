@@ -36,9 +36,15 @@ local rtl = vim.fs.joinpath(root, "rtl")
 local common_root = vim.fs.joinpath(root, "common")
 local vendor_root = vim.fs.joinpath(root, "vendor")
 local family_root = vim.fs.joinpath(vendor_root, "simulation", "family_a")
+local secondary_library_root = vim.fs.joinpath(
+  vendor_root,
+  "simulation",
+  "secondary"
+)
 vim.fn.mkdir(rtl, "p")
 vim.fn.mkdir(common_root, "p")
 vim.fn.mkdir(family_root, "p")
+vim.fn.mkdir(secondary_library_root, "p")
 
 local paths = {
   top = write(
@@ -46,6 +52,15 @@ local paths = {
     [[module top;
   VENDOR_CLOCK_BUFFER u_clk();
   SHARED_OVERRIDE u_override();
+  AUTO_LIBRARY u_auto0();
+  AUTO_LIBRARY u_auto1();
+  PROJECT_DEFINED u_project();
+  DIR_ORDER u_dir_order();
+  EXT_ORDER u_ext_order();
+  MISSING_LIBRARY u_missing();
+endmodule
+
+module PROJECT_DEFINED;
 endmodule
 ]]
   ),
@@ -92,6 +107,41 @@ endmodule
     vim.fs.joinpath(family_root, "unused.v"),
     "module UNUSED_VENDOR_MODULE; endmodule\n"
   ),
+  auto_library = write(
+    vim.fs.joinpath(family_root, "AUTO_LIBRARY.v"),
+    [[module AUTO_LIBRARY;
+  AUTO_DEP u_dep();
+endmodule
+]]
+  ),
+  auto_dependency = write(
+    vim.fs.joinpath(family_root, "AUTO_DEP.sv"),
+    "module AUTO_DEP; endmodule\n"
+  ),
+  project_defined_library = write(
+    vim.fs.joinpath(family_root, "PROJECT_DEFINED.v"),
+    "module PROJECT_DEFINED; endmodule\n"
+  ),
+  mapped_shadow = write(
+    vim.fs.joinpath(family_root, "VENDOR_CLOCK_BUFFER.v"),
+    "module VENDOR_CLOCK_BUFFER; endmodule\n"
+  ),
+  directory_first = write(
+    vim.fs.joinpath(family_root, "DIR_ORDER.sv"),
+    "module DIR_ORDER; endmodule\n"
+  ),
+  directory_second = write(
+    vim.fs.joinpath(secondary_library_root, "DIR_ORDER.v"),
+    "module DIR_ORDER; endmodule\n"
+  ),
+  extension_first = write(
+    vim.fs.joinpath(family_root, "EXT_ORDER.v"),
+    "module EXT_ORDER; endmodule\n"
+  ),
+  extension_second = write(
+    vim.fs.joinpath(family_root, "EXT_ORDER.sv"),
+    "module EXT_ORDER; endmodule\n"
+  ),
 }
 
 local effective = {
@@ -132,7 +182,7 @@ local catalog = {
         SHARED_OVERRIDE = paths.device_override,
         UNUSED_VENDOR_MODULE = paths.unused,
       },
-      library_dirs = { family_root },
+      library_dirs = { family_root, secondary_library_root },
       library_extensions = { ".v", ".sv" },
     },
   },
@@ -146,12 +196,16 @@ assert_equal(
     paths.top,
     paths.clock,
     paths.device_override,
+    paths.auto_library,
+    paths.directory_first,
+    paths.extension_first,
     paths.dependency,
     paths.cycle_a,
+    paths.auto_dependency,
     paths.cycle_b,
   },
   model.files,
-  "映射文件应按实例发现顺序递归加载并稳定去重"
+  "映射和库文件应按实例发现顺序递归加载并稳定去重"
 )
 assert_equal(
   {
@@ -164,6 +218,36 @@ assert_equal(
   },
   model.device.module_files,
   "工程信息应保留本次实际命中的模块映射"
+)
+assert_equal(
+  {
+    {
+      module = "AUTO_LIBRARY",
+      path = paths.auto_library,
+      library_dir = family_root,
+      device = "vendor_family_a",
+    },
+    {
+      module = "DIR_ORDER",
+      path = paths.directory_first,
+      library_dir = family_root,
+      device = "vendor_family_a",
+    },
+    {
+      module = "EXT_ORDER",
+      path = paths.extension_first,
+      library_dir = family_root,
+      device = "vendor_family_a",
+    },
+    {
+      module = "AUTO_DEP",
+      path = paths.auto_dependency,
+      library_dir = family_root,
+      device = "vendor_family_a",
+    },
+  },
+  model.library_files,
+  "库模块应按目录再按扩展名顺序命中，并递归加载依赖"
 )
 assert_equal(
   {
@@ -181,6 +265,22 @@ assert_equal(
 assert_true(
   not vim.tbl_contains(model.files, paths.unused),
   "未例化的映射不得进入工程模型"
+)
+assert_true(
+  not vim.tbl_contains(model.files, paths.project_defined_library),
+  "工程已有同名定义时不得加载库文件"
+)
+assert_true(
+  not vim.tbl_contains(model.files, paths.mapped_shadow),
+  "module_files 应优先于自动库搜索"
+)
+assert_true(
+  not vim.tbl_contains(model.files, paths.directory_second),
+  "库目录搜索应优先选择第一个命中目录"
+)
+assert_true(
+  not vim.tbl_contains(model.files, paths.extension_second),
+  "同一目录应优先选择第一个命中扩展名"
 )
 
 local function assert_skipped(entries, expected_warning, message)
@@ -273,6 +373,25 @@ assert_contains(
   paths.clock:gsub("\\", "/"),
   "已命中的映射文件应进入本地 .f"
 )
+assert_contains(
+  local_f,
+  paths.auto_library:gsub("\\", "/"),
+  "器件库自动命中文件应进入本地 .f"
+)
+assert_contains(
+  local_f,
+  "-y " .. family_root:gsub("\\", "/"),
+  "本地 .f 应继续保留器件库 -y"
+)
+assert_contains(
+  local_f,
+  "+libext+.v+.sv",
+  "本地 .f 应继续保留器件库 +libext"
+)
+assert_true(
+  project_f:find(paths.auto_library, 1, true) == nil,
+  "器件库自动命中文件不得进入可提交的项目 .f"
+)
 assert_true(
   local_f:find(paths.unused:gsub("\\", "/"), 1, true) == nil,
   "未命中的映射文件不得进入本地 .f"
@@ -298,6 +417,11 @@ assert_contains(
   info,
   "SHARED_OVERRIDE: common",
   "工程信息应显示器件依赖映射覆盖"
+)
+assert_contains(
+  info,
+  "AUTO_LIBRARY -> " .. paths.auto_library,
+  "工程信息应区分显示自动命中的库文件"
 )
 
 local health_report = {}
@@ -326,6 +450,98 @@ assert_contains(
   health_text,
   "模块映射覆盖: SHARED_OVERRIDE；common",
   "checkhealth 应检查依赖映射覆盖"
+)
+assert_contains(
+  health_text,
+  "库模块: AUTO_LIBRARY -> " .. paths.auto_library,
+  "checkhealth 应检查自动命中的库文件"
+)
+
+-- 项目自身的 library_dirs 同样应物化命中文件，但不带器件 ID。
+local project_library_root = vim.fs.joinpath(root, "project-library")
+vim.fn.mkdir(project_library_root, "p")
+local project_library_top = write(
+  vim.fs.joinpath(rtl, "project_library_top.sv"),
+  "module project_library_top; PROJECT_AUTO u_auto(); endmodule\n"
+)
+local project_library_file = write(
+  vim.fs.joinpath(project_library_root, "PROJECT_AUTO.sv"),
+  "module PROJECT_AUTO; endmodule\n"
+)
+local project_library_model, project_library_errors = project.build(root, {
+  source_sets = {
+    project_library = {
+      files = { project_library_top },
+      library_dirs = { project_library_root },
+      library_extensions = { ".sv" },
+    },
+  },
+  profiles = {
+    default = {
+      source_sets = { "project_library" },
+      top = "project_library_top",
+    },
+  },
+}, "default")
+assert_equal(nil, project_library_errors, "项目库自动解析不应产生错误")
+assert_equal(
+  { project_library_top, project_library_file },
+  project_library_model.files,
+  "项目 library_dirs 命中文件应加入工程模型"
+)
+assert_equal(
+  {
+    {
+      module = "PROJECT_AUTO",
+      path = project_library_file,
+      library_dir = project_library_root,
+    },
+  },
+  project_library_model.library_files,
+  "项目库命中记录不应携带器件 ID"
+)
+local project_library_config = {
+  source_sets = {
+    project_library = {
+      files = { project_library_top },
+      library_dirs = { project_library_root },
+      library_extensions = { ".sv" },
+    },
+  },
+  profiles = {
+    default = {
+      source_sets = { "project_library" },
+      top = "project_library_top",
+    },
+  },
+  default_profile = "default",
+  state_dir = vim.fs.joinpath(root, "project-library-state"),
+  project_output_dir = ".project-library-generated",
+}
+local project_library_workspace = {
+  root = root,
+  active_profile = "default",
+  generation = 0,
+  errors = {},
+  config = {
+    effective = project_library_config,
+    portable = project_library_config,
+  },
+}
+local project_library_built, project_library_generate_errors =
+  generate.run(project_library_workspace)
+assert_equal(
+  nil,
+  project_library_generate_errors,
+  "项目库物化后应成功生成产物"
+)
+local project_library_f = assert(util.read_file(
+  project_library_built.default.artifacts.project_filelist
+))
+assert_contains(
+  project_library_f,
+  "PROJECT_AUTO.sv",
+  "项目库命中文件应写入可提交项目 .f"
 )
 
 local alternate_root = vim.fs.joinpath(root, "vendor-alternate")
