@@ -44,6 +44,7 @@ local function open_info(workspace)
     "",
     "配置文件:",
     "  global:  " .. workspace.config.paths.global,
+    "  devices: " .. workspace.config.paths.device_catalog,
     "  project: " .. workspace.config.paths.project,
     "  local:   " .. workspace.config.paths.local_config,
     "",
@@ -55,10 +56,34 @@ local function open_info(workspace)
     end
     lines[#lines + 1] = ""
   end
+  if #(workspace.config.warnings or {}) > 0 then
+    lines[#lines + 1] = "警告:"
+    for _, warning in ipairs(workspace.config.warnings) do
+      lines[#lines + 1] = "  - " .. warning
+    end
+    lines[#lines + 1] = ""
+  end
   local entry = workspace.models and workspace.models[workspace.active_profile]
   if entry then
     local model = entry.full
+    local device = model.device or {}
+    local status_names = {
+      loaded = "已加载",
+      skipped = "已跳过",
+      not_configured = "未配置",
+    }
     vim.list_extend(lines, {
+      "器件模型:",
+      "  id: " .. tostring(device.id or "<未配置>"),
+      "  status: " .. tostring(status_names[device.status] or device.status),
+      "  dependencies: " .. (#(device.order or {}) > 0 and table.concat(device.order, " -> ") or "<无>"),
+      "  catalog: " .. tostring(device.catalog_path or workspace.config.paths.device_catalog),
+    })
+    for _, warning in ipairs(device.warnings or {}) do
+      lines[#lines + 1] = "  warning: " .. warning
+    end
+    vim.list_extend(lines, {
+      "",
       "工程模型:",
       "  top: " .. tostring(model.top or "<未设置>"),
       "  files: " .. #model.files,
@@ -72,6 +97,15 @@ local function open_info(workspace)
       "  Slang JSON: " .. entry.artifacts.local_slang,
     })
   else
+    local profile = workspace.config.effective.profiles[workspace.active_profile] or {}
+    vim.list_extend(lines, {
+      "器件模型:",
+      "  id: " .. tostring(profile.device or "<未配置>"),
+      "  status: 尚未生成",
+      "  dependencies: <尚未展开>",
+      "  catalog: " .. workspace.config.paths.device_catalog,
+      "",
+    })
     lines[#lines + 1] = "工程尚未生成。"
   end
   vim.cmd("botright new")
@@ -84,32 +118,13 @@ local function open_info(workspace)
   vim.bo[bufnr].modifiable = false
 end
 
-local function write_project_template(path)
-  if util.exists(path) then
-    return true
+local function edit_template(path, ensure)
+  local created, err = ensure(path)
+  if not created then
+    util.notify(tostring(err), vim.log.levels.ERROR)
+    return
   end
-  return util.atomic_write(path, [[return {
-  source_sets = {
-    common = {
-      roots = { "rtl" },
-      globs = { "**/*.sv", "**/*.svh", "**/*.v", "**/*.vh" },
-      exclude = { "build", "output" },
-      include_dirs = { { path = "include", optional = true } },
-      defines = {},
-      depends_on = {},
-    },
-  },
-  profiles = {
-    default = {
-      source_sets = { "common" },
-      defines = {},
-      include_dirs = {},
-      flags = {},
-    },
-  },
-  default_profile = "default",
-}
-]])
+  vim.cmd.edit(vim.fn.fnameescape(created))
 end
 
 function M.setup()
@@ -143,14 +158,22 @@ function M.setup()
     )
   end, {})
 
+  vim.api.nvim_create_user_command("FpgaSvEditGlobalConfig", function()
+    local workspace = current()
+    edit_template(workspace.config.paths.global, config_loader.ensure_global_template)
+  end, {})
+
+  vim.api.nvim_create_user_command("FpgaSvEditDeviceCatalog", function()
+    local workspace = current()
+    edit_template(
+      workspace.config.paths.device_catalog,
+      config_loader.ensure_device_catalog_template
+    )
+  end, {})
+
   vim.api.nvim_create_user_command("FpgaSvEditProjectConfig", function()
     local workspace = current()
-    local ok, err = write_project_template(workspace.config.paths.project)
-    if not ok then
-      util.notify(tostring(err), vim.log.levels.ERROR)
-      return
-    end
-    vim.cmd.edit(vim.fn.fnameescape(workspace.config.paths.project))
+    edit_template(workspace.config.paths.project, config_loader.ensure_project_template)
   end, {})
 
   vim.api.nvim_create_user_command("FpgaSvEditLocalConfig", function()

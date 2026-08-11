@@ -58,7 +58,7 @@ require("fpga_sv").setup({
 
 ## 配置放在哪里
 
-插件把配置分成三个边界。先按“是否需要提交、是否依赖当前机器”判断，
+插件把配置分成四个边界。先按“是否需要提交、是否依赖当前机器”判断，
 不要把所有选项都塞进 `.nvim-fpga.lua`：
 
 ```text
@@ -67,13 +67,17 @@ require("fpga_sv").setup({
 └── require("fpga_sv").setup({...})
     工具路径、提示、按键、适配器等跨项目选项
 
+本机器件目录
+└── <stdpath("config")>/fpga-sv-devices.lua
+    多工程共享的厂商模型绝对路径和器件依赖
+
 项目共享配置
 └── <project>/.nvim-fpga.lua
     可提交的 RTL、stub、Source Set、Profile 和项目级编译参数
 
 项目本机配置
 └── :FpgaSvEditLocalConfig
-    厂商库绝对路径、环境变量及只在本机可用的 Profile
+    当前工程独有的本机工具路径和私有覆盖
 ```
 
 最终配置按以下顺序合并，右侧覆盖左侧；列表默认追加并稳定去重：
@@ -115,6 +119,37 @@ require("fpga_sv").setup({
 若工具路径只在某台机器成立，也可以把 `tools` 写进项目本机配置；不要把
 个人绝对路径提交到项目共享配置。
 
+### 本机器件目录
+
+执行 `:FpgaSvEditDeviceCatalog` 打开器件目录。默认路径是
+`<stdpath("config")>/fpga-sv-devices.lua`，可用
+`device_catalog_file` 自定义。目录独立加载，不参与项目配置合并：
+
+```lua
+local amd_root = [[D:\FPGA\AMD]]
+
+return {
+  amd_common = {
+    files = {
+      vim.fs.joinpath(amd_root, "common", "glbl.v"),
+    },
+  },
+  amd_7series = {
+    depends_on = { "amd_common" },
+    library_dirs = {
+      vim.fs.joinpath(amd_root, "7series"),
+    },
+    library_extensions = { ".v", ".sv" },
+    defines = { FPGA_AMD_7SERIES = true },
+  },
+}
+```
+
+`depends_on` 是有序器件 ID 列表，支持多级、多父级和共享依赖去重。
+所有器件路径必须是绝对路径。任一依赖缺失、字段无效或路径不可用时，
+插件会原子跳过整套器件模型并继续生成项目 RTL；此时 Slang 仍可能报告
+`unknown module`。
+
 ### 项目共享配置
 
 `<project>/.nvim-fpga.lua` 由 `vim.secure.read()` 加载，可以提交到
@@ -130,6 +165,7 @@ return {
   profiles = {
     default = {
       source_sets = { "rtl" },
+      device = "amd_7series",
       top = "demo_top",
     },
   },
@@ -144,29 +180,8 @@ include 目录、flags 和 timescale 相关编译参数，都应放在这一层�
 
 执行 `:FpgaSvEditLocalConfig` 打开当前项目的本机配置。文件实际位于
 `<state>/fpga_sv/projects/<project-id>/config.lua`，不应提交到仓库。
-下面的最小示例在共享配置已有 `rtl` 的前提下，增加本机厂商原语库：
-
-```lua
-local primitive_root = assert(
-  vim.env.FPGA_PRIMITIVE_LIB,
-  "请设置 FPGA_PRIMITIVE_LIB"
-)
-
-return {
-  source_sets = {
-    device_primitives = {
-      library_dirs = { primitive_root },
-      library_extensions = { ".v", ".sv" },
-    },
-  },
-  profiles = {
-    edit_vendor = {
-      source_sets = { "rtl", "device_primitives" },
-      top = "demo_top",
-    },
-  },
-}
-```
+器件安装路径应放入共享器件目录；本地配置保留给当前工程独有的本机工具
+路径或私有覆盖。
 
 修改任一层后执行 `:FpgaSvRefresh` 重新加载，或执行
 `:FpgaSvGenerate` 重新生成全部 Profile 产物。
@@ -451,6 +466,18 @@ files = {
 
 ## Profile 字段参考
 
+### `device`
+
+引用本机器件目录中的一个最终器件。Profile 不支持继承；器件公共部分通过
+器件条目的 `depends_on` 组合：
+
+```lua
+device = "amd_7series"
+```
+
+合并顺序为“器件公共依赖 → 当前器件 → 项目 Source Set → Profile”。
+后加载的同名 `defines` 覆盖前一层。
+
 ### `source_sets`
 
 必须显式列出启用的 Source Set。空列表会生成空文件集合。
@@ -617,27 +644,24 @@ include_dirs = {
 ## FPGA 原语库配置
 
 看到 `unknown module: device_pll` 时，先确认缺少的是模块定义，而不是
-头文件。厂商原语库通常安装在每台机器不同的位置。推荐约定
-`FPGA_PRIMITIVE_LIB` 环境变量，并把引用该变量的配置写入
-`:FpgaSvEditLocalConfig` 打开的本地配置。这样共享的项目配置只保留
-RTL、公开模型、stub 和团队 Profile，不包含个人绝对路径。
+头文件。厂商原语库通常安装在每台机器不同的位置，应写入
+`:FpgaSvEditDeviceCatalog` 打开的共享器件目录。项目配置只通过
+`profile.device` 引用稳定器件 ID，不包含个人绝对路径。
 
 路径规则：
 
-- 相对路径以工程根目录为基准。
-- 绝对路径受支持，但不应写入共享的 `.nvim-fpga.lua`。
-- 厂商安装路径、绝对路径和个人工具配置应放入本地配置。
-- 启动 Neovim 前设置 `FPGA_PRIMITIVE_LIB`，让同一份本地配置适配不同
-  安装位置。
+- 器件目录中的 `files`、`filelists`、`roots`、`include_dirs` 和
+  `library_dirs` 必须使用绝对路径。
+- 绝对路径不应写入共享的 `.nvim-fpga.lua`。
+- 环境变量可以使用，但直接在器件目录中定义本机 Lua 路径变量通常更清楚。
 
 从未知模块到可分析工程的操作流程：
 
 1. 在厂商安装目录中找到 Slang 能解析的 Verilog/SystemVerilog 仿真
    模型；加密网表或只供专用仿真器使用的格式通常不能直接使用。
 2. 判断模型组织方式：每模块一文件、多模块合并文件，或厂商 `.f`。
-3. 执行 `:FpgaSvEditLocalConfig`，建立 `device_primitives` Source Set。
-4. 在同一本机配置中建立 `edit_vendor` Profile，与共享配置中的 `rtl`
-   组合。
+3. 执行 `:FpgaSvEditDeviceCatalog`，建立 `device_primitives` 器件条目。
+4. 在项目 Profile 中设置 `device = "device_primitives"`。
 5. 执行 `:FpgaSvGenerate`，再用 `:FpgaSvProfile edit_vendor` 切换。
 6. 执行 `:FpgaSvProjectInfo`，检查活动 Profile、Source Set、诊断和本地
    `.f`；本地 `.f` 中必须出现预期模型文件，或 `-y` 与 `+libext`。
@@ -645,8 +669,7 @@ RTL、公开模型、stub 和团队 Profile，不包含个人绝对路径。
 下面的模型只用于 Slang 编辑分析。插件生成的 `.f` 不承诺可以直接用于
 厂商仿真、综合或实现流程。
 
-下面三种接入模式覆盖常见的原语库组织方式。示例假设项目配置已经定义
-`rtl` Source Set。
+下面三种接入模式覆盖常见的原语库组织方式。
 
 ### 每个模块一个文件的库目录
 
@@ -660,17 +683,9 @@ local primitive_root = assert(
 )
 
 return {
-  source_sets = {
-    device_primitives = {
-      library_dirs = { primitive_root },
-      library_extensions = { ".v", ".sv" },
-    },
-  },
-  profiles = {
-    edit_vendor = {
-      source_sets = { "rtl", "device_primitives" },
-      top = "demo_top",
-    },
+  device_primitives = {
+    library_dirs = { primitive_root },
+    library_extensions = { ".v", ".sv" },
   },
 }
 ```
@@ -697,20 +712,12 @@ local primitive_root = assert(
 )
 
 return {
-  source_sets = {
-    device_primitives = {
-      files = {
-        vim.fs.joinpath(
-          primitive_root,
-          "primitive_models.v"
-        ),
-      },
-    },
-  },
-  profiles = {
-    edit_vendor = {
-      source_sets = { "rtl", "device_primitives" },
-      top = "demo_top",
+  device_primitives = {
+    files = {
+      vim.fs.joinpath(
+        primitive_root,
+        "primitive_models.v"
+      ),
     },
   },
 }
@@ -729,20 +736,12 @@ local primitive_root = assert(
 )
 
 return {
-  source_sets = {
-    device_primitives = {
-      filelists = {
-        vim.fs.joinpath(
-          primitive_root,
-          "primitive_models.f"
-        ),
-      },
-    },
-  },
-  profiles = {
-    edit_vendor = {
-      source_sets = { "rtl", "device_primitives" },
-      top = "demo_top",
+  device_primitives = {
+    filelists = {
+      vim.fs.joinpath(
+        primitive_root,
+        "primitive_models.f"
+      ),
     },
   },
 }
@@ -844,25 +843,14 @@ return {
 }
 ```
 
-项目本机配置再定义真实库和 `edit_vendor`。以下示例适用于“每模块一文件”
-的厂商库；合并文件或厂商 `.f` 应分别改用 `files` 或 `filelists`：
+共享项目配置可同时定义引用真实器件的 `edit_vendor`：
 
 ```lua
-local primitive_root = assert(
-  vim.env.FPGA_PRIMITIVE_LIB,
-  "请设置 FPGA_PRIMITIVE_LIB"
-)
-
 return {
-  source_sets = {
-    device_primitives = {
-      library_dirs = { primitive_root },
-      library_extensions = { ".v", ".sv" },
-    },
-  },
   profiles = {
     edit_vendor = {
-      source_sets = { "rtl", "device_primitives" },
+      source_sets = { "rtl" },
+      device = "device_primitives",
       top = "demo_top",
     },
   },
@@ -878,7 +866,7 @@ edit_stub
 
 edit_vendor
 ├── rtl
-└── device_primitives
+└── device: device_primitives
 ```
 
 同一 Profile 中不得同时启用真实原语库和同名 stub，否则 Slang 或插件索引
@@ -1125,6 +1113,9 @@ hints = {
 - `:FpgaSvGenerate`：生成全部 Profile，并重新通知 Slang。
 - `:FpgaSvRefresh`：重新加载配置、生成产物并刷新活动工程。
 - `:FpgaSvProjectInfo`：显示工程、错误、文件数量与产物。
+- `:FpgaSvEditGlobalConfig`：编辑插件全局配置。
+- `:FpgaSvEditDeviceCatalog`：编辑本机共享器件目录。
+- `:FpgaSvEditProjectConfig`：编辑可提交的项目配置。
 - `:FpgaSvEditLocalConfig`：编辑不提交到仓库的机器本地配置。
 - `:FpgaSvDefinition`：通过当前 `slang_server` 跳转到定义。
 - `:FpgaSvInstantiate [module]`：生成命名端口例化。

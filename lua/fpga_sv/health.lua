@@ -1,4 +1,5 @@
 local util = require("fpga_sv.util")
+local project = require("fpga_sv.project")
 local workspace_manager = require("fpga_sv.workspace")
 local M = {}
 
@@ -24,6 +25,54 @@ function M.check()
     for _, err in ipairs(workspace.config.errors) do
       vim.health.error(err)
     end
+  end
+
+  local catalog = workspace.config.device_catalog
+  if catalog.exists and catalog.valid then
+    local schema_ok, schema_errors = project.validate_device_catalog(catalog.entries)
+    if schema_ok then
+      vim.health.ok("器件目录语法和字段有效: " .. catalog.path)
+    else
+      for _, err in ipairs(schema_errors) do
+        vim.health.warn("器件目录字段无效: " .. err)
+      end
+    end
+  elseif catalog.exists then
+    for _, err in ipairs(catalog.errors) do
+      vim.health.error("器件目录无效: " .. err)
+    end
+  else
+    vim.health.warn("器件目录尚未创建: " .. catalog.path)
+  end
+
+  local profile = workspace.config.effective.profiles[workspace.active_profile]
+  if profile and profile.device then
+    local entry = workspace.models and workspace.models[workspace.active_profile]
+    local model = entry and entry.full
+    if not model then
+      model = project.build(
+        workspace.root,
+        workspace.config.effective,
+        workspace.active_profile,
+        catalog
+      )
+    end
+    local device = model and model.device
+    if device and device.status == "loaded" then
+      vim.health.ok(
+        "活动器件已加载: "
+          .. profile.device
+          .. "；依赖顺序: "
+          .. table.concat(device.order, " -> ")
+      )
+    else
+      local warnings = device and device.warnings or { "无法构建活动器件状态" }
+      for _, warning in ipairs(warnings) do
+        vim.health.warn(warning)
+      end
+    end
+  else
+    vim.health.ok("活动 Profile 未配置器件，保持原有工程行为")
   end
 
   for _, name in ipairs({ "slang", "svlint", "verible" }) do

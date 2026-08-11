@@ -6,6 +6,7 @@ function M.get()
 
   return {
     global_config = vim.fs.joinpath(config, "fpga-sv.lua"),
+    device_catalog_file = vim.fs.joinpath(config, "fpga-sv-devices.lua"),
     project_file = ".nvim-fpga.lua",
     state_dir = vim.fs.joinpath(state, "fpga_sv"),
     project_output_dir = vim.fs.joinpath(".nvim", "fpga-sv"),

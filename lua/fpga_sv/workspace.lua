@@ -60,6 +60,7 @@ function M.get(root)
     generation = 0,
     scan_generation = 0,
     errors = vim.deepcopy(loaded.errors),
+    warnings = vim.deepcopy(loaded.warnings),
     artifacts = {},
     index = nil,
   }
@@ -100,6 +101,31 @@ end
 
 function M.each()
   return pairs(workspaces)
+end
+
+function M.config_change_roots(path)
+  local changed = util.path_key(vim.fs.normalize(path))
+  local loaded = {}
+  local refresh_all = false
+  for root, workspace in pairs(workspaces) do
+    loaded[#loaded + 1] = { root = root, paths = workspace.config.paths }
+    if changed == util.path_key(workspace.config.paths.global)
+      or changed == util.path_key(workspace.config.paths.device_catalog)
+    then
+      refresh_all = true
+    end
+  end
+  local roots = {}
+  for _, item in ipairs(loaded) do
+    if refresh_all
+      or changed == util.path_key(item.paths.project)
+      or changed == util.path_key(item.paths.local_config)
+    then
+      roots[#roots + 1] = item.root
+    end
+  end
+  table.sort(roots)
+  return roots
 end
 
 return M

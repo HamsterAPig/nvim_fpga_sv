@@ -56,6 +56,19 @@
   }
 <
 
+本机器件目录：
+
+  :FpgaSvEditDeviceCatalog
+  <stdpath("config")>/fpga-sv-devices.lua
+
+用于多工程共享的厂商模型绝对路径。条目支持 depends_on、files、
+filelists、roots、include_dirs、library_dirs、library_extensions、
+defines 和 flags。depends_on 是有序器件 ID 列表，支持多级、多父级和
+共享依赖去重。
+
+任一器件依赖缺失、字段无效或路径不可用时，整套器件模型会被原子跳过，
+项目 RTL 仍继续生成；Slang 此时可能报告 unknown module。
+
 项目共享配置：
 
   <project>/.nvim-fpga.lua
@@ -68,14 +81,15 @@ flags。快速开始中的配置就是最小共享配置。
   :FpgaSvEditLocalConfig
   <state>/fpga_sv/projects/<project-id>/config.lua
 
-用于厂商库绝对路径、环境变量、本机工具路径和本机专用 Profile，不应提交。
+用于当前工程独有的本机工具路径和私有覆盖，不应提交。厂商模型绝对路径
+优先放入本机器件目录。
 
 合并顺序：
 
   内置默认值 < 全局文件 < setup() < 项目共享配置 < 项目本机配置
 
 工具程序路径通常放全局或本机配置；RTL、stub 和项目统一编译参数放共享
-配置；厂商安装路径放本机配置。修改后执行 :FpgaSvRefresh 或
+配置；厂商安装路径放器件目录。修改后执行 :FpgaSvRefresh 或
 :FpgaSvGenerate。
 
 .slang/server.json 是 Slang 自身配置，不属于插件项目配置，也不能替代
@@ -124,6 +138,7 @@ Source Set：
 
 Profile：
 
+  device              引用本机器件目录中的最终器件 ID。
   source_sets         必须显式列出启用集合；空列表生成空文件集合。
   top                 Slang 顶层模块名；唯一解析后发送源码路径。
   defines             Profile 专用宏。
@@ -152,8 +167,8 @@ unknown module 的处理流程：
 
   1. 找到厂商提供且 Slang 能解析的 Verilog/SystemVerilog 仿真模型。
   2. 判断模型是每模块一文件、合并模型文件，还是厂商 .f。
-  3. 执行 :FpgaSvEditLocalConfig。
-  4. 建立 device_primitives Source Set 和 edit_vendor Profile。
+  3. 执行 :FpgaSvEditDeviceCatalog。
+  4. 建立 device_primitives 器件条目，并由 Profile.device 引用。
   5. 执行 :FpgaSvGenerate 和 :FpgaSvProfile edit_vendor。
   6. 用 :FpgaSvProjectInfo 检查活动 Profile、Source Set、本地 .f 和诊断。
 
@@ -166,22 +181,14 @@ unknown module 的处理流程：
   )
 
   return {
-    source_sets = {
-      device_primitives = {
-        library_dirs = { primitive_root },
-        library_extensions = { ".v", ".sv" },
-      },
-    },
-    profiles = {
-      edit_vendor = {
-        source_sets = { "rtl", "device_primitives" },
-        top = "demo_top",
-      },
+    device_primitives = {
+      library_dirs = { primitive_root },
+      library_extensions = { ".v", ".sv" },
     },
   }
 <
 
-多模块合并文件时，将 Source Set 改为：
+多模块合并文件时，将器件条目改为：
 
 >
   device_primitives = {
@@ -191,7 +198,7 @@ unknown module 的处理流程：
   }
 <
 
-厂商 filelist 时，将 Source Set 改为：
+厂商 filelist 时，将器件条目改为：
 
 >
   device_primitives = {
@@ -259,8 +266,9 @@ stubs/device_primitives.sv：
   }
 <
 
-本机配置按上一节定义 device_primitives 和 edit_vendor。edit_stub 与
-edit_vendor 必须互斥，避免真实模型和同名 stub 重复定义。
+器件目录按上一节定义 device_primitives；项目配置另建 edit_vendor，
+设置 source_sets = { "rtl" } 和 device = "device_primitives"。
+edit_stub 与 edit_vendor 必须互斥，避免真实模型和同名 stub 重复定义。
 
 stub 必须与真实原语保持相同模块名；覆盖工程使用的参数名；匹配端口名称、
 方向、位宽、数组和位置顺序；只保留接口，不实现时钟、延迟或器件行为。
@@ -369,6 +377,8 @@ slang.setTopLevel，并报告具体原因。
 :FpgaSvRefresh               重新加载配置、生成产物并刷新活动工程。
 :FpgaSvProjectInfo           显示工程模型、文件数量和错误。
 :FpgaSvDefinition            通过当前 slang_server 跳转到定义。
+:FpgaSvEditGlobalConfig      编辑插件全局配置。
+:FpgaSvEditDeviceCatalog     编辑本机共享器件目录。
 :FpgaSvEditProjectConfig     编辑受信任的项目配置。
 :FpgaSvEditLocalConfig       编辑 <state>/fpga_sv 中的本地配置。
 :FpgaSvInstantiate [module]  插入命名端口例化。

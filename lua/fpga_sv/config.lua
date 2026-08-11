@@ -61,6 +61,10 @@ local function validate(config)
       and not util.is_list_operation(profile.source_sets)
     then
       errors[#errors + 1] = "profile " .. name .. " 的 source_sets 必须是列表"
+    elseif profile.device ~= nil
+      and (type(profile.device) ~= "string" or profile.device == "")
+    then
+      errors[#errors + 1] = "profile " .. name .. " 的 device 必须是非空字符串"
     end
   end
   return #errors == 0, errors
@@ -78,11 +82,15 @@ end
 
 function M.load(root, setup_options)
   local builtin = defaults.get()
-  local global_path = setup_options.global_config or builtin.global_config
+  setup_options = setup_options or {}
+  local global_path = util.path(setup_options.global_config or builtin.global_config)
   local global, global_err = read_layer(global_path, false)
   global = global or {}
 
   local preliminary = util.merge_many(builtin, global, setup_options)
+  local device_catalog_path = util.path(preliminary.device_catalog_file)
+  local device_catalog, device_catalog_err = read_layer(device_catalog_path, false)
+  device_catalog = device_catalog or {}
   local project_path = M.project_path(root, preliminary)
   local project, project_err = read_layer(project_path, true)
   project = project or {}
@@ -101,38 +109,103 @@ function M.load(root, setup_options)
     end
   end
   vim.list_extend(errors, validation_errors)
+  local warnings = {}
+  if device_catalog_err then
+    warnings[#warnings + 1] = "器件目录加载失败: " .. tostring(device_catalog_err)
+  end
 
   return {
     effective = effective,
     portable = project,
     machine = machine,
+    device_catalog = {
+      path = device_catalog_path,
+      entries = device_catalog,
+      exists = util.exists(device_catalog_path),
+      valid = device_catalog_err == nil,
+      errors = device_catalog_err and { tostring(device_catalog_err) } or {},
+    },
     paths = {
       global = global_path,
+      device_catalog = device_catalog_path,
       project = project_path,
       local_config = local_path,
     },
     valid = ok and #errors == 0,
     errors = errors,
+    warnings = warnings,
   }
 end
 
-function M.ensure_local_template(root, options)
-  local path = M.local_path(root, options)
+local function ensure_template(path, content)
   if util.exists(path) then
     return path
   end
-  local content = [[-- 此文件位于 Neovim state 目录，不应提交到项目仓库。
-return {
-  -- source_sets = {},
-  -- profiles = {},
-  -- tools = { svlint = { cmd = "svlint" } },
-}
-]]
   local ok, err = util.atomic_write(path, content)
   if not ok then
     return nil, err
   end
   return path
+end
+
+function M.ensure_global_template(path)
+  return ensure_template(path, [[-- FPGA SystemVerilog 插件的本机全局配置。
+-- 适合配置工具路径、提示、按键和器件目录位置。
+return {
+  -- tools = {
+  --   slang = { cmd = "slang-server" },
+  -- },
+  -- device_catalog_file = vim.fs.joinpath(vim.fn.stdpath("config"), "fpga-sv-devices.lua"),
+}
+]])
+end
+
+function M.ensure_device_catalog_template(path)
+  return ensure_template(path, [=[-- 本机共享器件目录；这里可以安全保存厂商模型的绝对路径。
+-- 工程通过 profiles.<name>.device 引用器件 ID。
+return {
+  -- amd_common = {
+  --   files = { [[D:\FPGA\AMD\common\glbl.v]] },
+  -- },
+  -- amd_7series = {
+  --   depends_on = { "amd_common" },
+  --   library_dirs = { [[D:\FPGA\AMD\7series]] },
+  --   library_extensions = { ".v", ".sv" },
+  -- },
+}
+]=])
+end
+
+function M.ensure_project_template(path)
+  return ensure_template(path, [[-- 可提交到仓库的 FPGA SystemVerilog 工程配置。
+return {
+  source_sets = {
+    rtl = {
+      roots = { "rtl" },
+    },
+  },
+  profiles = {
+    default = {
+      source_sets = { "rtl" },
+      -- device = "amd_7series",
+      -- top = "demo_top",
+    },
+  },
+  default_profile = "default",
+}
+]])
+end
+
+function M.ensure_local_template(root, options)
+  local path = M.local_path(root, options)
+  return ensure_template(path, [[-- 此文件位于 Neovim state 目录，不应提交到项目仓库。
+return {
+  -- tools = { svlint = { cmd = "svlint" } },
+  -- profiles = {
+  --   default = { device = "amd_7series" },
+  -- },
+}
+]])
 end
 
 return M

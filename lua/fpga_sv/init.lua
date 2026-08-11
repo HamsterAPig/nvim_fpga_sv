@@ -58,7 +58,11 @@ function M.setup(options)
   options = options or {}
   workspace_manager.setup(options)
   if initialized then
+    local roots = {}
     for root in workspace_manager.each() do
+      roots[#roots + 1] = root
+    end
+    for _, root in ipairs(roots) do
       workspace_manager.refresh(root)
     end
     return M
@@ -106,20 +110,12 @@ function M.setup(options)
   })
   vim.api.nvim_create_autocmd("BufWritePost", {
     group = group,
-    pattern = { ".nvim-fpga.lua", "fpga-sv.lua", "config.lua" },
+    pattern = "*",
     callback = function(args)
       vim.schedule(function()
-        local changed = vim.fs.normalize(args.file)
-        local roots = {}
-        for root, workspace_item in workspace_manager.each() do
-          local paths = workspace_item.config.paths
-          if util.path_key(changed) == util.path_key(paths.global)
-            or util.path_key(changed) == util.path_key(paths.project)
-            or util.path_key(changed) == util.path_key(paths.local_config)
-          then
-            roots[#roots + 1] = root
-          end
-        end
+        local buffer_name = vim.api.nvim_buf_get_name(args.buf)
+        local changed = vim.fs.normalize(buffer_name ~= "" and buffer_name or args.file)
+        local roots = workspace_manager.config_change_roots(changed)
         for _, root in ipairs(roots) do
           local refreshed = workspace_manager.refresh(root)
           if refreshed.config.valid then

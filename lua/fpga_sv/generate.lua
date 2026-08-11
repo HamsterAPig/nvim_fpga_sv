@@ -134,8 +134,18 @@ local function build_all(workspace)
   local names = vim.tbl_keys(effective.profiles)
   table.sort(names)
   for _, name in ipairs(names) do
-    local full, errors = project.build(workspace.root, effective, name)
+    local full, errors = project.build(
+      workspace.root,
+      effective,
+      name,
+      workspace.config.device_catalog
+    )
     if not full then
+      return nil, errors
+    end
+    local effective_without_device
+    effective_without_device, errors = project.build(workspace.root, effective, name)
+    if not effective_without_device then
       return nil, errors
     end
     local portable_layer = portable_config(workspace.config.portable, name)
@@ -146,10 +156,12 @@ local function build_all(workspace)
         return nil, errors
       end
     end
+    local machine_only = set_difference(effective_without_device, portable)
     built[name] = {
       full = full,
       portable = portable,
-      local_only = set_difference(full, portable),
+      device = full.device and full.device.model or nil,
+      local_only = machine_only,
     }
   end
   return built
@@ -181,9 +193,8 @@ function M.run(workspace)
     local project_f = vim.fs.joinpath(project_dir, name .. ".f")
     local local_f = vim.fs.joinpath(local_dir, name .. ".f")
     local project_lines = model_lines(models.portable, project_dir, true)
-    local local_lines = {
-      "-F " .. quote(project_f),
-    }
+    local local_lines = model_lines(models.device or {}, workspace.root, false)
+    local_lines[#local_lines + 1] = "-F " .. quote(project_f)
     vim.list_extend(local_lines, model_lines(models.local_only, workspace.root, false))
 
     local project_json = vim.fs.joinpath(project_dir, name .. ".slang.json")
@@ -259,8 +270,17 @@ function M.run(workspace)
 
   workspace.generation = workspace.generation + 1
   workspace.errors = {}
+  workspace.warnings = {}
+  for name, models in pairs(built) do
+    for _, warning in ipairs(models.full.warnings or {}) do
+      workspace.warnings[#workspace.warnings + 1] = "Profile " .. name .. ": " .. warning
+    end
+  end
   workspace.models = built
   workspace.artifacts = built[workspace.active_profile].artifacts
+  if #workspace.warnings > 0 then
+    util.notify(table.concat(workspace.warnings, "\n"), vim.log.levels.WARN)
+  end
   util.emit("FpgaSvProjectGenerated", {
     root = workspace.root,
     profile = workspace.active_profile,

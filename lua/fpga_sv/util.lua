@@ -112,6 +112,15 @@ function M.path(value, base)
   return vim.fs.normalize(value)
 end
 
+function M.is_absolute(path)
+  return type(path) == "string"
+    and (
+      path:match("^/") ~= nil
+      or path:match("^%a:[/\\]") ~= nil
+      or path:match("^[/\\][/\\]") ~= nil
+    )
+end
+
 function M.path_key(path)
   path = vim.fs.normalize(path)
   return jit and jit.os == "Windows" and path:lower() or path
