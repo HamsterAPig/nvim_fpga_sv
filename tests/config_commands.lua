@@ -60,6 +60,8 @@ assert_equal("-- keep-global\nreturn {}\n", util.read_file(global_path), "已有
 run_and_check("FpgaSvEditDeviceCatalog", device_path)
 local device_template = assert(util.read_file(device_path))
 assert_true(device_template:find("本机共享器件目录", 1, true) ~= nil, "器件模板应含简体中文注释")
+assert_true(device_template:find("local vendor_root", 1, true) ~= nil, "器件模板应集中定义厂商 Root")
+assert_true(device_template:find("module_files", 1, true) ~= nil, "器件模板应展示按需模块映射")
 run_and_check("FpgaSvEditDeviceCatalog", device_path)
 assert_equal(device_template, util.read_file(device_path), "已有器件目录不得覆盖")
 

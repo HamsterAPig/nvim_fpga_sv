@@ -82,6 +82,25 @@ local function open_info(workspace)
     for _, warning in ipairs(device.warnings or {}) do
       lines[#lines + 1] = "  warning: " .. warning
     end
+    lines[#lines + 1] = "  matched module_files:"
+    if #(device.module_files or {}) == 0 then
+      lines[#lines + 1] = "    <无>"
+    else
+      for _, mapping in ipairs(device.module_files) do
+        lines[#lines + 1] = "    " .. mapping.module .. " -> " .. mapping.path
+          .. " (" .. mapping.device .. ")"
+      end
+    end
+    lines[#lines + 1] = "  module_files overrides:"
+    if #(device.module_file_overrides or {}) == 0 then
+      lines[#lines + 1] = "    <无>"
+    else
+      for _, override in ipairs(device.module_file_overrides) do
+        lines[#lines + 1] = "    " .. override.module .. ": "
+          .. override.previous_device .. " (" .. override.previous_path .. ")"
+          .. " -> " .. override.device .. " (" .. override.path .. ")"
+      end
+    end
     vim.list_extend(lines, {
       "",
       "工程模型:",

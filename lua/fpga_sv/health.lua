@@ -65,6 +65,31 @@ function M.check()
           .. "；依赖顺序: "
           .. table.concat(device.order, " -> ")
       )
+      vim.health.ok(
+        "module_files 实际命中: "
+          .. tostring(#(device.module_files or {}))
+      )
+      for _, mapping in ipairs(device.module_files or {}) do
+        vim.health.ok(
+          "模块映射: " .. mapping.module .. " -> " .. mapping.path
+        )
+      end
+      for _, override in ipairs(device.module_file_overrides or {}) do
+        vim.health.ok(
+          "模块映射覆盖: "
+            .. override.module
+            .. "；"
+            .. override.previous_device
+            .. " ("
+            .. override.previous_path
+            .. ")"
+            .. " -> "
+            .. override.device
+            .. " ("
+            .. override.path
+            .. ")"
+        )
+      end
     else
       local warnings = device and device.warnings or { "无法构建活动器件状态" }
       for _, warning in ipairs(warnings) do

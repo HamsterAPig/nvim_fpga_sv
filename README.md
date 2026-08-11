@@ -126,26 +126,39 @@ require("fpga_sv").setup({
 `device_catalog_file` 自定义。目录独立加载，不参与项目配置合并：
 
 ```lua
-local amd_root = [[D:\FPGA\AMD]]
+-- 更换厂商工具版本或安装位置时，只修改这一行。
+local vendor_root =
+  [[D:\FPGA\Vendor\Toolchain_Release]]
+
+local family_root = vim.fs.joinpath(
+  vendor_root,
+  "simulation",
+  "family_a"
+)
 
 return {
-  amd_common = {
-    files = {
-      vim.fs.joinpath(amd_root, "common", "glbl.v"),
+  vendor_family_a = {
+    module_files = {
+      VENDOR_CLOCK_BUFFER =
+        vim.fs.joinpath(family_root, "clock_models.v"),
     },
-  },
-  amd_7series = {
-    depends_on = { "amd_common" },
     library_dirs = {
-      vim.fs.joinpath(amd_root, "7series"),
+      family_root,
     },
     library_extensions = { ".v", ".sv" },
-    defines = { FPGA_AMD_7SERIES = true },
   },
 }
 ```
 
 `depends_on` 是有序器件 ID 列表，支持多级、多父级和共享依赖去重。
+`module_files` 将模块名映射到合并模型文件；只有活动 Profile 实际例化
+对应模块时才加入本地 `.f`，并递归加载已映射的模型依赖。同一映射文件
+稳定去重，循环实例关系会安全终止。
+
+推荐在目录顶部定义厂商 Root，再派生版本/系列 Root，最后编写器件条目。
+一个目录可以定义多个 Root；厂商升级时只需修改对应的顶部变量，不需要
+新增插件级 `root`/`roots` 配置。
+
 所有器件路径必须是绝对路径。任一依赖缺失、字段无效或路径不可用时，
 插件会原子跳过整套器件模型并继续生成项目 RTL；此时 Slang 仍可能报告
 `unknown module`。
@@ -337,6 +350,22 @@ files = {
   "vendor/memory_model.sv",
 }
 ```
+
+### `module_files`（仅器件目录）
+
+把模块名映射到包含该模块的绝对模型文件。插件复用实例解析器，仅在活动
+Profile 实际例化模块时加入文件；已选模型中的映射依赖会继续递归解析。
+
+```lua
+module_files = {
+  VENDOR_CLOCK_BUFFER =
+    vim.fs.joinpath(family_root, "clock_models.v"),
+}
+```
+
+键必须是合法模块名，值必须是存在的绝对文件路径。器件依赖先合并，后加载
+器件的同名映射覆盖前面的公共依赖。映射文件只写入本地 `.f`，不会进入
+可提交的项目 `.f`。
 
 ### `filelists`
 
@@ -651,9 +680,11 @@ include_dirs = {
 路径规则：
 
 - 器件目录中的 `files`、`filelists`、`roots`、`include_dirs` 和
-  `library_dirs` 必须使用绝对路径。
+  `library_dirs` 必须使用绝对路径；`module_files` 的值必须是存在的
+  绝对文件路径。
 - 绝对路径不应写入共享的 `.nvim-fpga.lua`。
-- 环境变量可以使用，但直接在器件目录中定义本机 Lua 路径变量通常更清楚。
+- 推荐在器件目录顶部定义厂商 Root，再通过 `vim.fs.joinpath()` 派生
+  版本 Root、系列 Root 和器件路径。
 
 从未知模块到可分析工程的操作流程：
 
@@ -669,7 +700,36 @@ include_dirs = {
 下面的模型只用于 Slang 编辑分析。插件生成的 `.f` 不承诺可以直接用于
 厂商仿真、综合或实现流程。
 
-下面三种接入模式覆盖常见的原语库组织方式。
+下面四种接入模式覆盖常见的原语库组织方式。
+
+### 按模块选择合并模型文件
+
+厂商把多个模块合并在少量大文件中，但工程只用其中一部分时，优先使用
+`module_files`。它不会扫描整个厂商目录，也不会读取未命中的映射文件：
+
+```lua
+local vendor_root =
+  [[D:\FPGA\Vendor\Toolchain_Release]]
+local family_root = vim.fs.joinpath(
+  vendor_root,
+  "simulation",
+  "family_a"
+)
+
+return {
+  device_primitives = {
+    module_files = {
+      VENDOR_CLOCK_BUFFER =
+        vim.fs.joinpath(family_root, "clock_models.v"),
+    },
+    library_dirs = { family_root },
+    library_extensions = { ".v", ".sv" },
+  },
+}
+```
+
+如果 `clock_models.v` 又例化了另一个存在映射的模块，对应文件会递归加入。
+`:FpgaSvProjectInfo` 显示本次实际命中的映射和依赖覆盖关系。
 
 ### 每个模块一个文件的库目录
 
@@ -756,6 +816,7 @@ return {
 
 ### 如何判断字段是否选对
 
+- `module_files` 适合按模块选择合并模型文件，避免扫描大型厂商目录。
 - `library_dirs` 适合按模块拆文件并按需搜索的库。
 - 合并模型文件必须通过 `files` 或 `filelists` 显式加入。
 - `include_dirs` 只搜索 `` `include `` 文件，不能解决
@@ -1112,7 +1173,7 @@ hints = {
 - `:FpgaSvProfile [name]`：切换活动 Profile。
 - `:FpgaSvGenerate`：生成全部 Profile，并重新通知 Slang。
 - `:FpgaSvRefresh`：重新加载配置、生成产物并刷新活动工程。
-- `:FpgaSvProjectInfo`：显示工程、错误、文件数量与产物。
+- `:FpgaSvProjectInfo`：显示工程、实际命中的模块映射、文件数量与产物。
 - `:FpgaSvEditGlobalConfig`：编辑插件全局配置。
 - `:FpgaSvEditDeviceCatalog`：编辑本机共享器件目录。
 - `:FpgaSvEditProjectConfig`：编辑可提交的项目配置。
@@ -1139,8 +1200,8 @@ hints = {
 1. 执行 `:FpgaSvProfile`，确认当前选择了真实库或 stub Profile。
 2. 执行 `:FpgaSvGenerate`。
 3. 用 `:FpgaSvProjectInfo` 检查 Source Set、文件数量和生成产物。
-4. 检查本地 `.f` 是否包含预期的 `-y`、`+libext`、模型文件或 stub
-   文件。
+4. 检查实际命中的 `module_files`，以及本地 `.f` 中预期的 `-y`、
+   `+libext`、模型文件或 stub 文件。
 5. 确认没有把模块源码目录误放到 `include_dirs`。
 6. 确认合并模型文件使用的是 `files` 或 `filelists`。
 7. 搜索同名模块，排除真实模型与 stub 同时启用。

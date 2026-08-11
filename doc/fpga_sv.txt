@@ -61,10 +61,19 @@
   :FpgaSvEditDeviceCatalog
   <stdpath("config")>/fpga-sv-devices.lua
 
-用于多工程共享的厂商模型绝对路径。条目支持 depends_on、files、
-filelists、roots、include_dirs、library_dirs、library_extensions、
-defines 和 flags。depends_on 是有序器件 ID 列表，支持多级、多父级和
-共享依赖去重。
+用于多工程共享的厂商模型绝对路径。条目支持 depends_on、module_files、
+files、filelists、roots、include_dirs、library_dirs、
+library_extensions、defines 和 flags。depends_on 是有序器件 ID 列表，
+支持多级、多父级和共享依赖去重。
+
+module_files 以合法模块名为键、存在的绝对模型文件路径为值。只有活动
+Profile 实际例化对应模块时才加入本地 .f；已选模型中的映射依赖会递归
+加载，同一文件稳定去重，循环实例关系安全终止。依赖器件先合并，当前器件
+的同名映射覆盖公共依赖。
+
+推荐在器件目录顶部定义厂商 Root，再用 vim.fs.joinpath() 派生版本 Root、
+系列 Root 和器件路径。厂商升级时只修改顶部 Lua 变量；插件不提供额外的
+root/roots 字段。
 
 任一器件依赖缺失、字段无效或路径不可用时，整套器件模型会被原子跳过，
 项目 RTL 仍继续生成；Slang 此时可能报告 unknown module。
@@ -126,6 +135,7 @@ Source Set：
   roots               相对 <project> 的源码扫描目录。
   globs               文件类型与递归范围；直属文件可用 *.sv。
   files               显式加入文件。
+  module_files        仅器件目录；按实例把模块映射到绝对模型文件。
   filelists           导入 .f；嵌套路径相对当前 filelist。
   include_dirs        生成 -I，只搜索头文件，不编译目录模块。
   library_dirs        生成 -y。
@@ -171,6 +181,32 @@ unknown module 的处理流程：
   4. 建立 device_primitives 器件条目，并由 Profile.device 引用。
   5. 执行 :FpgaSvGenerate 和 :FpgaSvProfile edit_vendor。
   6. 用 :FpgaSvProjectInfo 检查活动 Profile、Source Set、本地 .f 和诊断。
+
+按模块选择合并模型文件：
+
+>
+  local vendor_root =
+    [[D:\FPGA\Vendor\Toolchain_Release]]
+  local family_root = vim.fs.joinpath(
+    vendor_root,
+    "simulation",
+    "family_a"
+  )
+
+  return {
+    device_primitives = {
+      module_files = {
+        VENDOR_CLOCK_BUFFER =
+          vim.fs.joinpath(family_root, "clock_models.v"),
+      },
+      library_dirs = { family_root },
+      library_extensions = { ".v", ".sv" },
+    },
+  }
+<
+
+module_files 不扫描整个厂商目录，也不读取未命中的映射文件。已命中的文件
+只进入本地 .f；:FpgaSvProjectInfo 显示实际命中和依赖覆盖关系。
 
 每模块一文件：
 
@@ -375,7 +411,7 @@ slang.setTopLevel，并报告具体原因。
 :FpgaSvProfile [name]        切换活动 Profile。
 :FpgaSvGenerate              生成全部 Profile 产物。
 :FpgaSvRefresh               重新加载配置、生成产物并刷新活动工程。
-:FpgaSvProjectInfo           显示工程模型、文件数量和错误。
+:FpgaSvProjectInfo           显示工程模型、模块映射、文件数量和错误。
 :FpgaSvDefinition            通过当前 slang_server 跳转到定义。
 :FpgaSvEditGlobalConfig      编辑插件全局配置。
 :FpgaSvEditDeviceCatalog     编辑本机共享器件目录。
@@ -405,7 +441,7 @@ slang.setTopLevel，并报告具体原因。
   1. 检查活动 Profile 是否选择真实库或 stub。
   2. 执行 :FpgaSvGenerate。
   3. 检查 :FpgaSvProjectInfo 的 Source Set、文件数量和本地 .f。
-  4. 检查 .f 是否包含模型/stub，或预期 -y 与 +libext。
+  4. 检查命中的 module_files，以及 .f 中模型/stub、-y 与 +libext。
   5. 不要把模块源码目录误写入 include_dirs。
   6. 合并模型文件使用 files，厂商 .f 使用 filelists。
   7. 排除真实模型与同名 stub 同时启用。

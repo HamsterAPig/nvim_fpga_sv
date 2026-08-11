@@ -1,3 +1,4 @@
+local indexer = require("fpga_sv.index")
 local util = require("fpga_sv.util")
 local M = {}
 
@@ -16,6 +17,7 @@ local device_fields = {
   include_dirs = true,
   library_dirs = true,
   library_extensions = true,
+  module_files = true,
   defines = true,
   flags = true,
 }
@@ -282,6 +284,32 @@ local function validate_device_entry(id, entry)
       errors[#errors + 1] = "器件 " .. id .. " 的 depends_on 只能包含非空器件 ID"
     end
   end
+  if entry.module_files ~= nil
+    and (
+      type(entry.module_files) ~= "table"
+      or (vim.islist(entry.module_files) and next(entry.module_files) ~= nil)
+    )
+  then
+    errors[#errors + 1] = "器件 " .. id .. " 的 module_files 必须是以模块名为键的 table"
+  else
+    for module_name, value in pairs(entry.module_files or {}) do
+      if type(module_name) ~= "string"
+        or not module_name:match("^[%a_$][%w_$]*$")
+      then
+        errors[#errors + 1] = "器件 " .. id
+          .. " 的 module_files 模块名无效: " .. tostring(module_name)
+      elseif type(value) ~= "string" or value == "" then
+        errors[#errors + 1] = "器件 " .. id .. " 的 module_files."
+          .. module_name .. " 必须是文件路径字符串"
+      elseif not util.is_absolute(value) then
+        errors[#errors + 1] = "器件 " .. id .. " 的 module_files."
+          .. module_name .. " 必须是绝对路径: " .. value
+      elseif not util.exists(util.path(value)) then
+        errors[#errors + 1] = "器件 " .. id .. " 的 module_files."
+          .. module_name .. " 不存在: " .. util.path(value)
+      end
+    end
+  end
   for _, field in ipairs({ "files", "filelists", "roots", "include_dirs", "library_dirs" }) do
     for _, value in ipairs(list(field)) do
       local path = type(value) == "table" and value.path or value
@@ -407,6 +435,9 @@ local function empty_model(root, name, profile)
     defines = {},
     library_dirs = {},
     library_extensions = {},
+    module_files = {},
+    module_file_sources = {},
+    module_file_overrides = {},
     flags = {},
     source_sets = {},
     warnings = {},
@@ -490,6 +521,36 @@ local function collect_device_entry(model, id, entry, errors)
       add_path(model.library_dirs, model._seen.library_dirs, path)
     end
   end
+  local module_names = vim.tbl_keys(entry.module_files or {})
+  table.sort(module_names)
+  for _, module_name in ipairs(module_names) do
+    local path = resolve_device_path(
+      entry.module_files[module_name],
+      "器件 " .. id .. " 的 module_files." .. module_name,
+      errors
+    )
+    if path then
+      local stat = (vim.uv or vim.loop).fs_stat(path)
+      if not stat or stat.type ~= "file" then
+        errors[#errors + 1] = "器件 " .. id .. " 的 module_files."
+          .. module_name .. " 必须指向文件: " .. path
+      else
+        local previous_path = model.module_files[module_name]
+        local previous_device = model.module_file_sources[module_name]
+        if previous_path then
+          model.module_file_overrides[#model.module_file_overrides + 1] = {
+            module = module_name,
+            previous_device = previous_device,
+            previous_path = previous_path,
+            device = id,
+            path = path,
+          }
+        end
+        model.module_files[module_name] = path
+        model.module_file_sources[module_name] = id
+      end
+    end
+  end
   add_defines(model.defines, entry.defines)
   vim.list_extend(model.library_extensions, entry.library_extensions or {})
   vim.list_extend(model.flags, entry.flags or {})
@@ -514,6 +575,8 @@ local function build_device(root, profile_name, device_id, catalog)
     catalog_path = catalog and catalog.path or nil,
     status = device_id and "skipped" or "not_configured",
     order = {},
+    module_files = {},
+    module_file_overrides = {},
     warnings = {},
   }
   if not device_id then
@@ -545,6 +608,7 @@ local function build_device(root, profile_name, device_id, catalog)
         device_model.library_extensions = util.unique(device_model.library_extensions)
         device_model.flags = util.unique(device_model.flags)
         info.status = "loaded"
+        info.module_file_overrides = vim.deepcopy(device_model.module_file_overrides)
         info.model = device_model
         return device_model, info
       end
@@ -557,6 +621,51 @@ local function build_device(root, profile_name, device_id, catalog)
     info.warnings[#info.warnings + 1] = prefix .. tostring(err)
   end
   return nil, info
+end
+
+local function resolve_mapped_modules(model)
+  local device = model.device
+  local device_model = device and device.model
+  if not device_model or not next(device_model.module_files or {}) then
+    return
+  end
+
+  local queue = vim.deepcopy(model.files)
+  local scanned_files = {}
+  local selected_modules = {}
+  local cursor = 1
+
+  -- 只读取活动 Profile 已收集的源码；命中映射后再递归读取对应模型。
+  while cursor <= #queue do
+    local path = queue[cursor]
+    cursor = cursor + 1
+    local path_key = util.path_key(path)
+    if not scanned_files[path_key] then
+      scanned_files[path_key] = true
+      local text = util.read_file(path)
+      if text then
+        for _, instance in ipairs(indexer.parse_instances(text)) do
+          local module_name = instance.type
+          local mapped_path = device_model.module_files[module_name]
+          if mapped_path and not selected_modules[module_name] then
+            selected_modules[module_name] = true
+            device.module_files[#device.module_files + 1] = {
+              module = module_name,
+              path = mapped_path,
+              device = device_model.module_file_sources[module_name],
+            }
+            add_path(
+              device_model.files,
+              device_model._seen.files,
+              mapped_path
+            )
+            add_path(model.files, model._seen.files, mapped_path)
+            queue[#queue + 1] = mapped_path
+          end
+        end
+      end
+    end
+  end
 end
 
 function M.build(root, config, profile_name, device_catalog)
@@ -642,6 +751,7 @@ function M.build(root, config, profile_name, device_catalog)
   end
   add_defines(model.defines, profile.defines)
   vim.list_extend(model.flags, profile.flags or {})
+  resolve_mapped_modules(model)
   model.library_extensions = util.unique(model.library_extensions)
   model.flags = util.unique(model.flags)
   if model.device and model.device.model then
