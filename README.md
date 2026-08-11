@@ -1068,6 +1068,23 @@ slang_server 附着缓冲区
 
 当前现场验证基线为 Neovim `0.12.4` 与 slang-server `0.2.9`。
 
+### Slang / Verible LSP 自动仲裁
+
+当 Slang、Verible 适配器均启用，且 `slang-server` 可执行并成功注册时，
+插件自动划分两个 LSP 的职责：
+
+- Slang 独占 definition、references 和 document highlight，因而 `gd`、
+  `gr` 与引用高亮不会再同时收到 Verible 候选。
+- Verible 关闭 pull diagnostics，但继续保留 push diagnostics、code action
+  和其他未冲突能力；同一份 Verible 告警不会再由 push/pull 各显示一次。
+- 插件会清理已经存在的 Verible pull diagnostic namespace，同时保留
+  `nvim.lsp.verible.<id>` push namespace。
+
+该仲裁同时覆盖新触发的 `LspAttach` 和插件初始化前已经附着的客户端。
+Mason 或其他配置自动启用 `verible` 时行为相同，无需修改 LazyVim、Mason、
+FzfLua 或 picker 配置。若 Slang 适配器被禁用、工具不可执行或注册失败，
+插件不会裁剪 Verible，它会继续作为完整 LSP 后备。
+
 以下操作会重新发送活动构建信息：
 
 - `slang_server` 完成 `LspAttach`。
@@ -1248,7 +1265,9 @@ unused signal 等通常属于真实 HDL 源码问题。
 先执行 `:LspInfo` 区分重复来源：
 
 - 若当前缓冲区附着多个 `slang_server`，请检查重复的 LSP 配置或自动启用逻辑。
-- 同时附着一个 `slang_server` 和一个 `verible` 属于正常情况；插件不会跨客户端合并诊断。
+- 同时附着一个 `slang_server` 和一个 `verible` 属于正常情况。Slang 可用时，
+  插件会关闭 Verible pull diagnostics，仅保留它发布的一份 push 告警；
+  插件不会合并两个服务端内容不同的诊断。
 - 若只有一个 `slang_server`，旧版 Slang 可能在一次
   `textDocument/publishDiagnostics` 中发布精确重复项。插件会在该 Slang
   发布包内按完整 LSP Diagnostic 对象去重；位置、级别、代码、相关信息或

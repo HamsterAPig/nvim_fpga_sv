@@ -365,6 +365,19 @@ slang.json 记录 Profile、build file 与 top。本地 .f 使用 -F 引用项�
 top 模块缺失或定义不唯一时，插件保留 build file，不发送无效的
 slang.setTopLevel，并报告具体原因。
 
+Slang、Verible 适配器均启用且 slang-server 可用时，插件自动仲裁两个
+LSP 的职责：
+
+  - Slang 独占 definition、references 和 document highlight。
+  - Verible 关闭 pull diagnostics，保留 push diagnostics、code action
+    和其他未冲突能力。
+  - 清理已有 Verible pull diagnostic namespace，保留
+    nvim.lsp.verible.<id> push namespace。
+
+该行为同时覆盖新 LspAttach 与 setup() 前已经附着的客户端。Mason 自动
+启用 verible 时无需额外配置。Slang 禁用、不可执行或注册失败时不会裁剪
+Verible，后者继续作为完整 LSP 后备。
+
 默认 keymaps.definition = "gd"。只有 gd 尚未被用户或 LazyVim 定义时，
 插件才为当前 HDL 缓冲区创建映射。设为 false 可禁用。gd 调用
 :FpgaSvDefinition，并使用当前附着 slang_server 的标准 definition 请求。
@@ -467,8 +480,9 @@ gd 没有跳转：
 
   - 用 :LspInfo 检查 slang_server 数量；多个 slang_server 表示 LSP
     配置或自动启用逻辑重复。
-  - 同时附着一个 slang_server 和一个 verible 属于正常情况，插件不会
-    跨客户端合并诊断。
+  - 同时附着一个 slang_server 和一个 verible 属于正常情况。Slang
+    可用时，插件关闭 Verible pull diagnostics，仅保留一份 push 告警；
+    两个服务端内容不同的诊断不会被合并。
   - 只有一个 slang_server 时，旧版 Slang 可能在单次发布中包含精确
     重复项。插件仅合并完整 LSP Diagnostic 对象完全相同的项，属性不同
     的诊断仍会保留。

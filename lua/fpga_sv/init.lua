@@ -4,6 +4,7 @@ local features = require("fpga_sv.features")
 local generate = require("fpga_sv.generate")
 local indexer = require("fpga_sv.index")
 local util = require("fpga_sv.util")
+local verible = require("fpga_sv.adapters.verible")
 local workspace_manager = require("fpga_sv.workspace")
 local M = {}
 
@@ -39,6 +40,7 @@ local function setup_highlights()
 end
 
 local function attach_buffer(bufnr)
+  verible.arbitrate_buffer(bufnr)
   local workspace = workspace_manager.get(workspace_manager.root(bufnr))
   if workspace.config.valid and not workspace.models then
     local built, errors = generate.run(workspace)
@@ -86,6 +88,10 @@ function M.setup(options)
     group = group,
     callback = function(args)
       local client = vim.lsp.get_client_by_id(args.data.client_id)
+      if client and client.name == "verible" then
+        -- LspAttach 是 Neovim 支持的 capability opt-out 时机。
+        verible.arbitrate_client(client)
+      end
       if not client or client.name ~= "slang_server" or not is_hdl_buffer(args.buf) then
         return
       end

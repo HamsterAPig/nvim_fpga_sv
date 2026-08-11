@@ -20,8 +20,14 @@ function M.setup(config)
   if config.adapters.slang then
     availability.slang = require("fpga_sv.adapters.slang").setup(config.tools.slang)
   end
+  local verible = require("fpga_sv.adapters.verible")
+  verible.configure_lsp_arbitration(
+    config.adapters.verible
+      and config.adapters.slang
+      and availability.slang == true
+  )
   if config.adapters.verible then
-    availability.verible = require("fpga_sv.adapters.verible").setup(config.tools.verible)
+    availability.verible = verible.setup(config.tools.verible)
   end
   availability.svlint = config.adapters.svlint
     and require("fpga_sv.util").executable(config.tools.svlint.cmd)
