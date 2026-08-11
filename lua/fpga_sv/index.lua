@@ -1,5 +1,6 @@
 local util = require("fpga_sv.util")
 local M = {}
+local CACHE_VERSION = 1
 
 local function line_number(text, offset)
   local _, count = text:sub(1, offset):gsub("\n", "\n")
@@ -392,6 +393,7 @@ local function scan_declarations(text, path, parser, line_offset, only_kind)
         local header_end = header_end_at(text, name_end + 1)
         if header_end and header_end < finish then
           local header = text:sub(name_end + 1, header_end)
+          local port_search = 1
           local hash = header:find("#%s*%(")
           if hash then
             local open = header:find("%(", hash)
@@ -401,10 +403,11 @@ local function scan_declarations(text, path, parser, line_offset, only_kind)
                 params:sub(2, -2),
                 symbol.line + line_number(header, open) - 1
               )
-              header = header:sub(param_end + 1)
+              -- 不能裁剪原始模块头，否则 parameter 占用的换行会让端口行号整体上移。
+              port_search = param_end + 1
             end
           end
-          local open = header:find("%(")
+          local open = header:find("%(", port_search)
           if open then
             local ports = balanced_at(header, open)
             if ports then
@@ -762,7 +765,11 @@ local function read_cache(workspace)
     return { files = {} }
   end
   local ok, decoded = pcall(vim.json.decode, text)
-  if ok and type(decoded) == "table" and decoded._owner == "nvim_fpga_sv" then
+  if ok
+    and type(decoded) == "table"
+    and decoded._owner == "nvim_fpga_sv"
+    and decoded._version == CACHE_VERSION
+  then
     return decoded
   end
   return { files = {} }
@@ -770,6 +777,7 @@ end
 
 local function write_cache(workspace, cache)
   cache._owner = "nvim_fpga_sv"
+  cache._version = CACHE_VERSION
   util.atomic_write(cache_path(workspace), vim.json.encode(cache) .. "\n")
 end
 
